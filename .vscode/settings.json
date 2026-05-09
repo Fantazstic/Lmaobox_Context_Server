@@ -3,12 +3,35 @@
     "runtime": {
       "version": "Lua 5.4"
     },
+    "diagnostics": {
+      "globals": [
+        "http",
+        "entities",
+        "callbacks",
+        "engine",
+        "draw",
+        "input",
+        "profiler",
+        "warp",
+        "globals",
+        "G"
+      ],
+      "disable": [
+        "lowercase-global",
+        "unused-local",
+        "trailing-space"
+      ]
+    },
     "workspace": {
       "library": {
         "${workspaceFolder}/types": true
       },
-      "maxPreload": 2000,
-      "preloadFileSize": 200
+      "maxPreload": 10000,
+      "preloadFileSize": 50000,
+      "checkThirdParty": true
+    },
+    "telemetry": {
+      "enable": false
     }
   },
   "emeraldwalk.runonsave": {
@@ -18,5 +41,8 @@
         "cmd": "powershell -ExecutionPolicy Bypass -File \"${workspaceFolder}\\prototypes\\deploy.ps1\" \"${file}\""
       }
     ]
+  },
+  "[lua]": {
+    "editor.formatOnSave": false
   }
 }

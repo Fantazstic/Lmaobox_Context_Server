@@ -1,20 +1,11 @@
 {
   "recommendations": [
     "sumneko.lua",
+    "github.copilot",
+    "github.copilot-chat",
     "golang.go",
     "ms-python.python",
     "ms-python.vscode-pylance",
-    "ms-vscode.powershell",
-    "emeraldwalk.runonsave",
-    "yzhang.markdown-all-in-one"
-  ]
-}
-{
-  "recommendations": [
-    "golang.go",
-    "ms-python.python",
-    "ms-python.vscode-pylance",
-    "sumneko.lua",
     "ms-vscode.powershell",
     "emeraldwalk.runonsave",
     "yzhang.markdown-all-in-one"

@@ -134,7 +134,7 @@ func checkLuaCallbackMutationPolicy(filePath string, policy LboxMutationPolicy) 
 	violations := make([]luaPolicyViolation, 0)
 	functionDepthByLine := buildFunctionDepthByLine(tokens)
 	unregisteredAtDepthZero := make(map[string]bool)
-	
+
 	// Identify callback handler functions (those passed to callbacks.Register)
 	callbackHandlers := identifyCallbackHandlerFunctions(tokens)
 	callbackHandlerRanges := buildCallbackHandlerLineRanges(tokens, callbackHandlers)
@@ -1320,28 +1320,28 @@ func identifyCallbackHandlerFunctions(tokens []luaToken) map[string]bool {
 // buildCallbackHandlerLineRanges creates a map of line ranges for each callback handler function
 func buildCallbackHandlerLineRanges(tokens []luaToken, handlers map[string]bool) map[string][2]int {
 	ranges := make(map[string][2]int)
-	
+
 	// Find function definitions and their ranges
 	for i := 0; i < len(tokens); i++ {
 		if tokens[i].Kind != "keyword" || tokens[i].Text != "function" {
 			continue
 		}
-		
+
 		// Get function name
 		if i+1 >= len(tokens) || tokens[i+1].Kind != "ident" {
 			continue
 		}
-		
+
 		funcName := strings.ToLower(tokens[i+1].Text)
 		if !handlers[funcName] {
 			continue
 		}
-		
+
 		// Find the matching 'end' for this function
 		functionStartLine := tokens[i].Line
 		endLine := functionStartLine
 		depth := 1
-		
+
 		for j := i + 1; j < len(tokens); j++ {
 			if tokens[j].Kind == "keyword" {
 				if tokens[j].Text == "function" {
@@ -1355,10 +1355,10 @@ func buildCallbackHandlerLineRanges(tokens []luaToken, handlers map[string]bool)
 				}
 			}
 		}
-		
+
 		ranges[funcName] = [2]int{functionStartLine, endLine}
 	}
-	
+
 	return ranges
 }
 
