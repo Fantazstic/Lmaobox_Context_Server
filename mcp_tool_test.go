@@ -220,6 +220,107 @@ end
 	}
 }
 
+func TestParseDLuaEntriesFindsMixedCaseConstants(t *testing.T) {
+	content := "---@type integer\nTFCond_Taunting = 7\n"
+	entries := parseDLuaEntries("types/lmaobox_lua_api/constants/E_TFCOND.d.lua", content)
+	if len(entries) == 0 {
+		t.Fatalf("expected at least 1 entry")
+	}
+
+	found := false
+	for _, entry := range entries {
+		if entry.Symbol == "TFCond_Taunting" {
+			found = true
+			if entry.Kind != "constant" {
+				t.Fatalf("expected Kind=constant, got %s", entry.Kind)
+			}
+			if entry.Section != "constants" {
+				t.Fatalf("expected Section=constants, got %s", entry.Section)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("expected to find TFCond_Taunting constant")
+	}
+}
+
+func TestSmartSearchNormalizationMatchesUnderscoreQuery(t *testing.T) {
+	content := "---@type integer\nTFCond_Taunting = 7\n"
+	entries := parseDLuaEntries("types/lmaobox_lua_api/constants/E_TFCOND.d.lua", content)
+	if len(entries) == 0 {
+		t.Fatalf("expected entries")
+	}
+
+	var candidate smartCandidate
+	for _, entry := range entries {
+		if entry.Symbol == "TFCond_Taunting" {
+			candidate = entry
+			break
+		}
+	}
+	if candidate.Symbol == "" {
+		t.Fatalf("candidate TFCond_Taunting missing")
+	}
+
+	queryLower := strings.ToLower("TF_COND_TAUNT")
+	tokens := strings.Fields(queryLower)
+	queryNorm := normalizeSearchText(queryLower)
+	tokensNorm := make([]string, 0, len(tokens))
+	for _, token := range tokens {
+		tokensNorm = append(tokensNorm, normalizeSearchText(token))
+	}
+
+	score := scoreSmartCandidate(queryLower, tokens, queryNorm, tokensNorm, candidate)
+	if score <= 0 {
+		t.Fatalf("expected positive score for normalized query, got %f", score)
+	}
+}
+
+func TestSmartSearchTypoToleranceMatchesSingleToken(t *testing.T) {
+	content := "---@type integer\nTFCond_Taunting = 7\n"
+	entries := parseDLuaEntries("types/lmaobox_lua_api/constants/E_TFCOND.d.lua", content)
+	if len(entries) == 0 {
+		t.Fatalf("expected entries")
+	}
+
+	var candidate smartCandidate
+	for _, entry := range entries {
+		if entry.Symbol == "TFCond_Taunting" {
+			candidate = entry
+			break
+		}
+	}
+	if candidate.Symbol == "" {
+		t.Fatalf("candidate TFCond_Taunting missing")
+	}
+
+	queryLower := strings.ToLower("TFCond_Tauntng")
+	tokens := strings.Fields(queryLower)
+	queryNorm := normalizeSearchText(queryLower)
+	tokensNorm := make([]string, 0, len(tokens))
+	for _, token := range tokens {
+		tokensNorm = append(tokensNorm, normalizeSearchText(token))
+	}
+
+	score := scoreSmartCandidate(queryLower, tokens, queryNorm, tokensNorm, candidate)
+	if score <= 0 {
+		t.Fatalf("expected positive score for typo query, got %f", score)
+	}
+}
+
+func TestLoadConstantsGroupListsTFCondConstants(t *testing.T) {
+	info, err := loadConstantsGroup("E_TFCOND")
+	if err != nil {
+		t.Fatalf("loadConstantsGroup error: %v", err)
+	}
+	if info == "" {
+		t.Fatalf("expected constants group output")
+	}
+	if !strings.Contains(info, "TFCond_Taunting") {
+		t.Fatalf("expected TFCond_Taunting to be listed")
+	}
+}
+
 // TestZeroMutationMultipleViolations tests that multiple violations are reported
 func TestZeroMutationMultipleViolations(t *testing.T) {
 	src := `

@@ -22,7 +22,7 @@ import (
 
 const (
 	SERVER_NAME    = "LmaoboxContext"
-	SERVER_VERSION = "1.1.3"
+	SERVER_VERSION = "1.1.5"
 )
 
 type BundleRequest struct {
@@ -73,6 +73,16 @@ type luacheckState struct {
 
 var globalLuacheckState = &luacheckState{}
 var preferLuaLanguageServer bool
+
+type smartIndexState struct {
+	mu         sync.RWMutex
+	loaded     bool
+	candidates []smartCandidate
+	snippets   []smartCandidate
+	loadErr    error
+}
+
+var globalSmartIndex = &smartIndexState{}
 
 // bundleLineMapRegexes are package-level to avoid recompilation on every call.
 var (
@@ -305,14 +315,17 @@ func handleGetTypes(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallTool
 	}
 
 	if typeInfo == "" {
+		matches, _, _ := smartSearch(symbol, 8)
+		didYouMean := formatDidYouMeanSection(symbol, matches)
+
 		return mcp.NewToolResultText(fmt.Sprintf(
 			"## get_types: No definition found for `%s`\n\n"+
-				"**Suggestions:**\n"+
-				"- Check spelling/capitalization (`engine.TraceLine` not `Engine.Traceline`)\n"+
-				"- Try the parent namespace (e.g. `draw` instead of `draw.Color`)\n"+
-				"- Use `smart_search` with a keyword to find the correct name\n"+
-				"- Use `get_smart_context` if you want examples and usage patterns",
-			symbol)), nil
+				"If you weren't sure of the exact name, try one of these:\n\n"+
+				"- Parent namespace (e.g. `draw` instead of `draw.Color`)\n"+
+				"- `smart_search(\"<topic>\")` (e.g. `taunt`, `cond`, `flags`, `convar`)\n"+
+				"- `get_smart_context(\"<symbol>\")` for usage examples\n\n"+
+				"%s",
+			symbol, didYouMean)), nil
 	}
 
 	return mcp.NewToolResultText(fmt.Sprintf("## get_types: `%s`\n\n%s", symbol, typeInfo)), nil
@@ -331,24 +344,62 @@ func handleGetSmartContext(ctx context.Context, req mcp.CallToolRequest) (*mcp.C
 	}
 
 	if contextInfo == "" {
+		matches, _, _ := smartSearch(symbol, 8)
+		didYouMean := formatDidYouMeanSection(symbol, matches)
+
 		// Try to fall back to type definition
 		typeInfo, _ := findTypeDefinition(symbol)
 		if typeInfo != "" {
 			return mcp.NewToolResultText(fmt.Sprintf(
 				"## get_smart_context: `%s` (types fallback)\n\nNo curated context file found, but type definition is available:\n\n%s\n\n"+
-					"---\n**Tip:** Use `smart_search` with keywords to find the exact symbol name.",
-				symbol, typeInfo)), nil
+					"%s",
+				symbol, typeInfo, didYouMean)), nil
 		}
 		return mcp.NewToolResultText(fmt.Sprintf(
 			"## get_smart_context: Not found for `%s`\n\n"+
-				"**Try:**\n"+
+				"Try:\n"+
 				"- Variations: `draw.Color`, `Color`, `draw`\n"+
-				"- `smart_search` with a keyword to discover the correct name\n"+
-				"- `get_types` for raw type signatures",
-			symbol)), nil
+				"- `smart_search(\"<topic>\")` (e.g. `taunt`, `cond`, `flags`, `convar`)\n"+
+				"- `get_types(\"<symbol>\")` for raw signatures\n\n"+
+				"%s",
+			symbol, didYouMean)), nil
 	}
 
 	return mcp.NewToolResultText(fmt.Sprintf("## get_smart_context: `%s`\n\n%s", symbol, contextInfo)), nil
+}
+
+func formatDidYouMeanSection(query string, matches []SmartSearchResult) string {
+	if len(matches) == 0 {
+		return ""
+	}
+
+	maxRows := 5
+	if len(matches) < maxRows {
+		maxRows = len(matches)
+	}
+
+	var sb strings.Builder
+	sb.WriteString("---\n")
+	sb.WriteString("**Closest matches:**\n")
+	sb.WriteString("| Symbol | Kind | Description | Signature |\n")
+	sb.WriteString("|---|---|---|---|\n")
+	for _, m := range matches[:maxRows] {
+		desc := m.Description
+		if len(desc) > 80 {
+			desc = desc[:77] + "..."
+		}
+		sig := m.Signature
+		if len(sig) > 60 {
+			sig = sig[:57] + "..."
+		}
+		desc = strings.ReplaceAll(desc, "|", `\\|`)
+		sig = strings.ReplaceAll(sig, "|", `\\|`)
+		sb.WriteString(fmt.Sprintf("| `%s` | %s | %s | %s |\n", m.Symbol, m.Kind, desc, sig))
+	}
+
+	sb.WriteString("\n")
+	sb.WriteString(fmt.Sprintf("Tip: run `smart_search(\"%s\")` for more.\n", query))
+	return strings.TrimSpace(sb.String())
 }
 
 // Native Go bundling functions
@@ -1180,7 +1231,7 @@ func loadConstantsGroup(symbol string) (string, error) {
 	lines := strings.Split(string(content), "\n")
 	descriptionLines := make([]string, 0)
 	constants := make([]string, 0)
-	constantPattern := regexp.MustCompile(`^([A-Z0-9_]+)\s*=`)
+	constantPattern := regexp.MustCompile(`^([A-Za-z_][A-Za-z0-9_]+)\s*=`)
 
 	for _, raw := range lines {
 		trimmed := strings.TrimSpace(raw)
@@ -1474,14 +1525,29 @@ func buildSnippetAppendix(symbol string) (string, error) {
 	}
 
 	queryLower := strings.ToLower(strings.TrimSpace(symbol))
+	queryNorm := normalizeSearchText(queryLower)
 	tokens := strings.Fields(strings.ReplaceAll(strings.ReplaceAll(queryLower, ".", " "), "_", " "))
 	if len(tokens) == 0 {
 		tokens = strings.Fields(queryLower)
 	}
+	tokensNorm := make([]string, 0, len(tokens))
+	for _, token := range tokens {
+		tokensNorm = append(tokensNorm, normalizeSearchText(token))
+	}
 
 	matched := make([]smartCandidate, 0)
 	for _, c := range candidates {
-		c.Score = scoreSnippetCandidate(queryLower, tokens, c.combinedLower, strings.ToLower(c.Symbol))
+		if c.symbolLower == "" {
+			c.symbolLower = strings.ToLower(c.Symbol)
+			c.symbolNorm = normalizeSearchText(c.symbolLower)
+		}
+		if c.combinedLower == "" {
+			c.combinedLower = strings.ToLower(c.Symbol + " " + c.Description + " " + c.Signature)
+		}
+		if c.combinedNorm == "" {
+			c.combinedNorm = normalizeSearchText(c.combinedLower)
+		}
+		c.Score = scoreSnippetCandidate(queryLower, tokens, queryNorm, tokensNorm, c)
 		if c.Score > 20 {
 			matched = append(matched, c)
 		}
@@ -1544,6 +1610,91 @@ type snippetFileEntry struct {
 type smartCandidate struct {
 	SmartSearchResult
 	combinedLower string
+	symbolLower   string
+	combinedNorm  string
+	symbolNorm    string
+}
+
+func normalizeSearchText(input string) string {
+	lower := strings.ToLower(input)
+	var sb strings.Builder
+	sb.Grow(len(lower))
+	for _, r := range lower {
+		if r >= 'a' && r <= 'z' {
+			sb.WriteRune(r)
+			continue
+		}
+		if r >= '0' && r <= '9' {
+			sb.WriteRune(r)
+			continue
+		}
+	}
+	return sb.String()
+}
+
+func buildSmartIndex() ([]smartCandidate, error) {
+	typesDir := findExistingRepoPath("types", "lmaobox_lua_api")
+	var candidates []smartCandidate
+	_ = filepath.WalkDir(typesDir, func(path string, d fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return nil
+		}
+		if d.IsDir() {
+			return nil
+		}
+		if !strings.HasSuffix(d.Name(), ".d.lua") {
+			return nil
+		}
+		content, readErr := os.ReadFile(path)
+		if readErr != nil {
+			return nil
+		}
+		entries := parseDLuaEntries(path, string(content))
+		candidates = append(candidates, entries...)
+		return nil
+	})
+	return candidates, nil
+}
+
+func getSmartIndex() ([]smartCandidate, []smartCandidate, error) {
+	globalSmartIndex.mu.RLock()
+	loaded := globalSmartIndex.loaded
+	loadErr := globalSmartIndex.loadErr
+	if loaded {
+		candidates := globalSmartIndex.candidates
+		snippets := globalSmartIndex.snippets
+		globalSmartIndex.mu.RUnlock()
+		return candidates, snippets, loadErr
+	}
+	globalSmartIndex.mu.RUnlock()
+
+	globalSmartIndex.mu.Lock()
+	defer globalSmartIndex.mu.Unlock()
+	if globalSmartIndex.loaded {
+		return globalSmartIndex.candidates, globalSmartIndex.snippets, globalSmartIndex.loadErr
+	}
+
+	candidates, err := buildSmartIndex()
+	if err != nil {
+		globalSmartIndex.loaded = true
+		globalSmartIndex.loadErr = err
+		return nil, nil, err
+	}
+
+	snippetCandidates, snippetErr := loadSnippetCandidates()
+	if snippetErr != nil {
+		globalSmartIndex.loaded = true
+		globalSmartIndex.candidates = candidates
+		globalSmartIndex.snippets = nil
+		globalSmartIndex.loadErr = snippetErr
+		return candidates, nil, snippetErr
+	}
+
+	globalSmartIndex.loaded = true
+	globalSmartIndex.candidates = candidates
+	globalSmartIndex.snippets = snippetCandidates
+	globalSmartIndex.loadErr = nil
+	return candidates, snippetCandidates, nil
 }
 
 func handleSmartSearch(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -1723,40 +1874,31 @@ func sectionDisplayName(section string) string {
 
 func smartSearch(query string, limit int) ([]SmartSearchResult, []SmartSearchResult, error) {
 	queryLower := strings.ToLower(strings.TrimSpace(query))
+	queryNorm := normalizeSearchText(queryLower)
 
-	execDir := filepath.Dir(os.Args[0])
-	typesDir := filepath.Join(execDir, "types", "lmaobox_lua_api")
-
-	var candidates []smartCandidate
-
-	_ = filepath.WalkDir(typesDir, func(path string, d fs.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			return nil
-		}
-		if d.IsDir() {
-			return nil
-		}
-		if !strings.HasSuffix(d.Name(), ".d.lua") {
-			return nil
-		}
-		content, readErr := os.ReadFile(path)
-		if readErr != nil {
-			return nil
-		}
-		entries := parseDLuaEntries(path, string(content))
-		candidates = append(candidates, entries...)
-		return nil
-	})
-
-	snippetCandidates, err := loadSnippetCandidates()
+	candidates, snippetCandidates, err := getSmartIndex()
 	if err != nil {
 		return nil, nil, err
 	}
 
 	tokens := strings.Fields(queryLower)
+	tokensNorm := make([]string, 0, len(tokens))
+	for _, token := range tokens {
+		tokensNorm = append(tokensNorm, normalizeSearchText(token))
+	}
 	var scored []smartCandidate
 	for _, c := range candidates {
-		c.Score = scoreSmartCandidate(queryLower, tokens, c.combinedLower, strings.ToLower(c.Symbol))
+		if c.symbolLower == "" {
+			c.symbolLower = strings.ToLower(c.Symbol)
+			c.symbolNorm = normalizeSearchText(c.symbolLower)
+		}
+		if c.combinedLower == "" {
+			c.combinedLower = strings.ToLower(c.Symbol + " " + c.Description + " " + c.Signature)
+		}
+		if c.combinedNorm == "" {
+			c.combinedNorm = normalizeSearchText(c.combinedLower)
+		}
+		c.Score = scoreSmartCandidate(queryLower, tokens, queryNorm, tokensNorm, c)
 		if c.Score > 0 {
 			scored = append(scored, c)
 		}
@@ -1764,7 +1906,17 @@ func smartSearch(query string, limit int) ([]SmartSearchResult, []SmartSearchRes
 
 	var snippetScored []smartCandidate
 	for _, c := range snippetCandidates {
-		c.Score = scoreSnippetCandidate(queryLower, tokens, c.combinedLower, strings.ToLower(c.Symbol))
+		if c.symbolLower == "" {
+			c.symbolLower = strings.ToLower(c.Symbol)
+			c.symbolNorm = normalizeSearchText(c.symbolLower)
+		}
+		if c.combinedLower == "" {
+			c.combinedLower = strings.ToLower(c.Symbol + " " + c.Description + " " + c.Signature)
+		}
+		if c.combinedNorm == "" {
+			c.combinedNorm = normalizeSearchText(c.combinedLower)
+		}
+		c.Score = scoreSnippetCandidate(queryLower, tokens, queryNorm, tokensNorm, c)
 		if c.Score > 0 {
 			snippetScored = append(snippetScored, c)
 		}
@@ -1879,6 +2031,7 @@ func parseSnippetEntries(content string) []smartCandidate {
 
 		combinedParts := []string{title, strings.Join(prefixes, " "), description, strings.Join(bodyLines, " ")}
 		combined := strings.ToLower(strings.Join(combinedParts, " "))
+		symbolLower := strings.ToLower(prefix)
 
 		results = append(results, smartCandidate{
 			SmartSearchResult: SmartSearchResult{
@@ -1889,6 +2042,9 @@ func parseSnippetEntries(content string) []smartCandidate {
 				Signature:   signature,
 			},
 			combinedLower: combined,
+			symbolLower:   symbolLower,
+			combinedNorm:  normalizeSearchText(combined),
+			symbolNorm:    normalizeSearchText(symbolLower),
 		})
 	}
 
@@ -1993,7 +2149,7 @@ func parseDLuaEntries(filePath, content string) []smartCandidate {
 	}
 
 	funcRe := regexp.MustCompile(`^function\s+([\w.]+)\s*\(`)
-	constRe := regexp.MustCompile(`^([A-Z_][A-Z0-9_]{2,})\s*=`)
+	constRe := regexp.MustCompile(`^([A-Za-z_][A-Za-z0-9_]{2,})\s*=`)
 
 	lines := strings.Split(content, "\n")
 	var commentBlock []string
@@ -2019,6 +2175,7 @@ func parseDLuaEntries(filePath, content string) []smartCandidate {
 			desc := buildDesc(commentBlock)
 
 			if symbolName != "" {
+				symbolLower := strings.ToLower(symbolName)
 				combined := strings.ToLower(symbolName + " " + desc + " " + sig)
 				results = append(results, smartCandidate{
 					SmartSearchResult: SmartSearchResult{
@@ -2029,6 +2186,9 @@ func parseDLuaEntries(filePath, content string) []smartCandidate {
 						Signature:   sig,
 					},
 					combinedLower: combined,
+					symbolLower:   symbolLower,
+					combinedNorm:  normalizeSearchText(combined),
+					symbolNorm:    normalizeSearchText(symbolLower),
 				})
 			}
 			commentBlock = commentBlock[:0]
@@ -2038,6 +2198,7 @@ func parseDLuaEntries(filePath, content string) []smartCandidate {
 		if m := constRe.FindStringSubmatch(trimmed); len(m) > 1 {
 			name := m[1]
 			desc := buildDesc(commentBlock)
+			symbolLower := strings.ToLower(name)
 			combined := strings.ToLower(name + " " + desc)
 			results = append(results, smartCandidate{
 				SmartSearchResult: SmartSearchResult{
@@ -2047,6 +2208,9 @@ func parseDLuaEntries(filePath, content string) []smartCandidate {
 					Description: desc,
 				},
 				combinedLower: combined,
+				symbolLower:   symbolLower,
+				combinedNorm:  normalizeSearchText(combined),
+				symbolNorm:    normalizeSearchText(symbolLower),
 			})
 			commentBlock = commentBlock[:0]
 			continue
@@ -2070,8 +2234,14 @@ func buildDesc(commentBlock []string) string {
 	return strings.TrimSpace(strings.Join(parts, " "))
 }
 
-func scoreSmartCandidate(queryLower string, tokens []string, combinedLower, symbolLower string) float64 {
+func scoreSmartCandidate(queryLower string, tokens []string, queryNorm string, tokensNorm []string, candidate smartCandidate) float64 {
 	score := 0.0
+	combinedLower := candidate.combinedLower
+	symbolLower := candidate.symbolLower
+	combinedNorm := candidate.combinedNorm
+	symbolNorm := candidate.symbolNorm
+
+	isSingleToken := len(tokens) == 1 && !strings.Contains(queryLower, " ")
 
 	if symbolLower == queryLower {
 		score += 120
@@ -2083,11 +2253,42 @@ func scoreSmartCandidate(queryLower string, tokens []string, combinedLower, symb
 		score += 60
 	}
 
+	if symbolNorm == queryNorm && queryNorm != "" {
+		score += 110
+	}
+	if queryNorm != "" && strings.HasPrefix(symbolNorm, queryNorm) {
+		score += 70
+	}
+	if queryNorm != "" && strings.Contains(symbolNorm, queryNorm) {
+		score += 50
+	}
+	if isSingleToken && queryNorm != "" {
+		distance := levenshteinDistanceMax(queryNorm, symbolNorm, 2)
+		if distance == 0 {
+			score += 35
+		} else if distance == 1 {
+			score += 28
+		} else if distance == 2 {
+			score += 18
+		}
+	}
+
 	for _, token := range tokens {
 		if strings.Contains(symbolLower, token) {
 			score += 30
 		} else if strings.Contains(combinedLower, token) {
 			score += 15
+		}
+	}
+
+	for _, token := range tokensNorm {
+		if token == "" {
+			continue
+		}
+		if strings.Contains(symbolNorm, token) {
+			score += 22
+		} else if strings.Contains(combinedNorm, token) {
+			score += 12
 		}
 	}
 
@@ -2102,11 +2303,112 @@ func scoreSmartCandidate(queryLower string, tokens []string, combinedLower, symb
 		score += 20 * coverage
 	}
 
+	if len(tokensNorm) > 0 {
+		hits := 0
+		for _, t := range tokensNorm {
+			if t != "" && strings.Contains(combinedNorm, t) {
+				hits++
+			}
+		}
+		coverage := float64(hits) / float64(len(tokensNorm))
+		score += 14 * coverage
+	}
+
 	return score
 }
 
-func scoreSnippetCandidate(queryLower string, tokens []string, combinedLower, symbolLower string) float64 {
-	base := scoreSmartCandidate(queryLower, tokens, combinedLower, symbolLower)
+func levenshteinDistanceMax(a string, b string, maxDist int) int {
+	if maxDist < 0 {
+		return maxDist + 1
+	}
+	if a == b {
+		return 0
+	}
+	lenA := len(a)
+	lenB := len(b)
+	if lenA == 0 {
+		if lenB <= maxDist {
+			return lenB
+		}
+		return maxDist + 1
+	}
+	if lenB == 0 {
+		if lenA <= maxDist {
+			return lenA
+		}
+		return maxDist + 1
+	}
+	if lenA-lenB > maxDist || lenB-lenA > maxDist {
+		return maxDist + 1
+	}
+
+	if lenA > lenB {
+		a, b = b, a
+		lenA, lenB = lenB, lenA
+	}
+
+	previous := make([]int, lenA+1)
+	current := make([]int, lenA+1)
+	for i := 0; i <= lenA; i++ {
+		previous[i] = i
+	}
+
+	for j := 1; j <= lenB; j++ {
+		bj := b[j-1]
+		minInRow := maxDist + 1
+		start := 1
+		end := lenA
+		if j-maxDist > start {
+			start = j - maxDist
+		}
+		if j+maxDist < end {
+			end = j + maxDist
+		}
+
+		current[0] = j
+		for i := 1; i < start; i++ {
+			current[i] = maxDist + 1
+		}
+		for i := start; i <= end; i++ {
+			cost := 0
+			if a[i-1] != bj {
+				cost = 1
+			}
+			deletion := previous[i] + 1
+			insertion := current[i-1] + 1
+			substitution := previous[i-1] + cost
+
+			best := deletion
+			if insertion < best {
+				best = insertion
+			}
+			if substitution < best {
+				best = substitution
+			}
+			current[i] = best
+			if best < minInRow {
+				minInRow = best
+			}
+		}
+		for i := end + 1; i <= lenA; i++ {
+			current[i] = maxDist + 1
+		}
+
+		if minInRow > maxDist {
+			return maxDist + 1
+		}
+
+		previous, current = current, previous
+	}
+
+	if previous[lenA] > maxDist {
+		return maxDist + 1
+	}
+	return previous[lenA]
+}
+
+func scoreSnippetCandidate(queryLower string, tokens []string, queryNorm string, tokensNorm []string, candidate smartCandidate) float64 {
+	base := scoreSmartCandidate(queryLower, tokens, queryNorm, tokensNorm, candidate)
 	if base <= 0 {
 		return 0
 	}
