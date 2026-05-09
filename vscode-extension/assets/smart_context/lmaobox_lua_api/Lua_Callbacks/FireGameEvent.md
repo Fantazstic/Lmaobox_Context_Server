@@ -20,3 +20,4 @@ end)
 
 - See `GameEvent` smart context for field access patterns
 - Event names are lowercase strings
+- TF2 event list: https://wiki.alliedmods.net/Team_Fortress_2_Events

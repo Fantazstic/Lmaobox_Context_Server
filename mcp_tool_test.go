@@ -293,6 +293,184 @@ func TestAliasBoostSuggestsInCondForPlayerCondNetvar(t *testing.T) {
 	}
 }
 
+func TestSmartSearchCommonQueriesReturnHelpfulSymbols(t *testing.T) {
+	tests := []struct {
+		query    string
+		expected []string
+	}{
+		{query: "m_nPlayerCond", expected: []string{"Entity.InCond", "E_TFCOND"}},
+		{query: "m_Shared tfcond", expected: []string{"Entity.InCond", "E_TFCOND"}},
+		{query: "getcond taunt", expected: []string{"Entity.InCond"}},
+		{query: "tf_cond_taunting", expected: []string{"TFCond_Taunting"}},
+		{query: "player flags m_fFlags", expected: []string{"E_PlayerFlag"}},
+		{query: "convar sensitivity", expected: []string{"client.GetConVar"}},
+		{query: "cvar fov", expected: []string{"client.GetConVar"}},
+		{query: "drawmodel flags studio_render", expected: []string{"Entity.DrawModel"}},
+		{query: "player_death", expected: []string{"player_death", "FireGameEvent", "GameEvent"}},
+		{query: "FireGameEvent player_death", expected: []string{"FireGameEvent", "player_death"}},
+	}
+
+	for _, tc := range tests {
+		primary, secondary, err := smartSearch(tc.query, 25)
+		if err != nil {
+			t.Fatalf("smartSearch(%q) error: %v", tc.query, err)
+		}
+		if len(primary) == 0 && len(secondary) == 0 {
+			t.Fatalf("smartSearch(%q) returned no results", tc.query)
+		}
+
+		found := false
+		for _, want := range tc.expected {
+			for _, r := range primary {
+				if r.Symbol == want {
+					found = true
+					break
+				}
+			}
+			if found {
+				break
+			}
+			for _, r := range secondary {
+				if r.Symbol == want {
+					found = true
+					break
+				}
+			}
+			if found {
+				break
+			}
+		}
+		if !found {
+			syms := make([]string, 0, len(primary))
+			for _, r := range primary {
+				syms = append(syms, r.Symbol)
+			}
+			t.Fatalf("smartSearch(%q) missing expected %v; got %v", tc.query, tc.expected, syms)
+		}
+	}
+}
+
+func TestHandleGetTypesReturnsClosestMatchesOnMiss(t *testing.T) {
+	result, err := handleGetTypes(context.Background(), mcp.CallToolRequest{
+		Params: struct {
+			Name      string                 `json:"name"`
+			Arguments map[string]interface{} `json:"arguments,omitempty"`
+			Meta      *struct {
+				ProgressToken mcp.ProgressToken `json:"progressToken,omitempty"`
+			} `json:"_meta,omitempty"`
+		}{
+			Name: "get_types",
+			Arguments: map[string]interface{}{
+				"symbol": "Entity.InCon",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("handleGetTypes error: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("handleGetTypes returned tool error: %v", result.Content)
+	}
+
+	text := fmt.Sprintf("%v", result.Content)
+	if !strings.Contains(text, "Closest matches") {
+		t.Fatalf("expected Closest matches section, got: %s", text)
+	}
+	if !strings.Contains(text, "Entity.InCond") {
+		t.Fatalf("expected Entity.InCond suggestion, got: %s", text)
+	}
+}
+
+func TestHandleGetSmartContextAcceptsColonMethodForm(t *testing.T) {
+	result, err := handleGetSmartContext(context.Background(), mcp.CallToolRequest{
+		Params: struct {
+			Name      string                 `json:"name"`
+			Arguments map[string]interface{} `json:"arguments,omitempty"`
+			Meta      *struct {
+				ProgressToken mcp.ProgressToken `json:"progressToken,omitempty"`
+			} `json:"_meta,omitempty"`
+		}{
+			Name: "get_smart_context",
+			Arguments: map[string]interface{}{
+				"symbol": "Entity:InCond",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("handleGetSmartContext error: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("handleGetSmartContext returned tool error: %v", result.Content)
+	}
+
+	text := fmt.Sprintf("%v", result.Content)
+	if !strings.Contains(text, "Entity.InCond") {
+		t.Fatalf("expected Entity.InCond content, got: %s", text)
+	}
+}
+
+func TestHandleGetSmartContextReturnsClosestMatchesOnMiss(t *testing.T) {
+	result, err := handleGetSmartContext(context.Background(), mcp.CallToolRequest{
+		Params: struct {
+			Name      string                 `json:"name"`
+			Arguments map[string]interface{} `json:"arguments,omitempty"`
+			Meta      *struct {
+				ProgressToken mcp.ProgressToken `json:"progressToken,omitempty"`
+			} `json:"_meta,omitempty"`
+		}{
+			Name: "get_smart_context",
+			Arguments: map[string]interface{}{
+				"symbol": "Entity.InCon",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("handleGetSmartContext error: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("handleGetSmartContext returned tool error: %v", result.Content)
+	}
+
+	text := fmt.Sprintf("%v", result.Content)
+	if !strings.Contains(text, "Closest matches") {
+		t.Fatalf("expected Closest matches section, got: %s", text)
+	}
+	if !strings.Contains(text, "Entity.InCond") {
+		t.Fatalf("expected Entity.InCond suggestion, got: %s", text)
+	}
+}
+
+func TestHandleGetTypesSuggestsClosestConstantOnMiss(t *testing.T) {
+	result, err := handleGetTypes(context.Background(), mcp.CallToolRequest{
+		Params: struct {
+			Name      string                 `json:"name"`
+			Arguments map[string]interface{} `json:"arguments,omitempty"`
+			Meta      *struct {
+				ProgressToken mcp.ProgressToken `json:"progressToken,omitempty"`
+			} `json:"_meta,omitempty"`
+		}{
+			Name: "get_types",
+			Arguments: map[string]interface{}{
+				"symbol": "TF_COND_TAUNTING",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("handleGetTypes error: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("handleGetTypes returned tool error: %v", result.Content)
+	}
+
+	text := fmt.Sprintf("%v", result.Content)
+	if !strings.Contains(text, "Closest matches") {
+		t.Fatalf("expected Closest matches section, got: %s", text)
+	}
+	if !strings.Contains(text, "TFCond_Taunting") {
+		t.Fatalf("expected TFCond_Taunting suggestion, got: %s", text)
+	}
+}
+
 func TestSmartSearchNormalizationMatchesUnderscoreQuery(t *testing.T) {
 	content := "---@type integer\nTFCond_Taunting = 7\n"
 	entries := parseDLuaEntries("types/lmaobox_lua_api/constants/E_TFCOND.d.lua", content)

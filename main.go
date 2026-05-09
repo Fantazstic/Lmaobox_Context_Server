@@ -22,7 +22,7 @@ import (
 
 const (
 	SERVER_NAME    = "LmaoboxContext"
-	SERVER_VERSION = "1.1.6"
+	SERVER_VERSION = "1.1.7"
 )
 
 type BundleRequest struct {
@@ -1458,6 +1458,7 @@ func combineTypeAndSmartContext(typeInfo string, additional string) string {
 
 func findBestSmartContextMatch(root string, symbol string) (string, error) {
 	normalized := strings.ToLower(strings.ReplaceAll(strings.ReplaceAll(strings.TrimSpace(symbol), "::", "."), "/", "."))
+	normalized = strings.ReplaceAll(normalized, ":", ".")
 	if normalized == "" {
 		return "", nil
 	}

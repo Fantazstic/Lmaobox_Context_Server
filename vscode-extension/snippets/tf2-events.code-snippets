@@ -1,0 +1,87 @@
+{
+  "TF2 Event: player_death": {
+    "prefix": "player_death",
+    "body": [
+      "player_death"
+    ],
+    "description": "TF2 GameEvent name (use in FireGameEvent). Fields vary; see AlliedModders TF2 events list."
+  },
+  "TF2 Event: player_hurt": {
+    "prefix": "player_hurt",
+    "body": [
+      "player_hurt"
+    ],
+    "description": "TF2 GameEvent name (use in FireGameEvent)."
+  },
+  "TF2 Event: player_spawn": {
+    "prefix": "player_spawn",
+    "body": [
+      "player_spawn"
+    ],
+    "description": "TF2 GameEvent name (use in FireGameEvent)."
+  },
+  "TF2 Event: player_changeclass": {
+    "prefix": "player_changeclass",
+    "body": [
+      "player_changeclass"
+    ],
+    "description": "TF2 GameEvent name (use in FireGameEvent)."
+  },
+  "TF2 Event: teamplay_round_start": {
+    "prefix": "teamplay_round_start",
+    "body": [
+      "teamplay_round_start"
+    ],
+    "description": "TF2 GameEvent name (use in FireGameEvent)."
+  },
+  "TF2 Event: teamplay_round_win": {
+    "prefix": "teamplay_round_win",
+    "body": [
+      "teamplay_round_win"
+    ],
+    "description": "TF2 GameEvent name (use in FireGameEvent)."
+  },
+  "TF2 Event: teamplay_point_captured": {
+    "prefix": "teamplay_point_captured",
+    "body": [
+      "teamplay_point_captured"
+    ],
+    "description": "TF2 GameEvent name (use in FireGameEvent)."
+  },
+  "TF2 Event: object_destroyed": {
+    "prefix": "object_destroyed",
+    "body": [
+      "object_destroyed"
+    ],
+    "description": "TF2 GameEvent name (use in FireGameEvent)."
+  },
+  "TF2 Event: item_pickup": {
+    "prefix": "item_pickup",
+    "body": [
+      "item_pickup"
+    ],
+    "description": "TF2 GameEvent name (use in FireGameEvent)."
+  },
+  "TF2 Event: post_inventory_application": {
+    "prefix": "post_inventory_application",
+    "body": [
+      "post_inventory_application"
+    ],
+    "description": "TF2 GameEvent name (use in FireGameEvent)."
+  },
+  "TF2 GameEvent: quick reference": {
+    "prefix": "tf2-events",
+    "body": [
+      "-- Game events are handled in the FireGameEvent callback:",
+      "callbacks.Register(\"FireGameEvent\", \"events\", function(ev)",
+      "    local name = ev:GetName()",
+      "    if name == \"player_death\" then",
+      "        -- See event list for fields:",
+      "        -- https://wiki.alliedmods.net/Team_Fortress_2_Events",
+      "    end",
+      "end)"
+    ],
+    "description": "Template for TF2 game event handling + link to the event list."
+  }
+}
+
