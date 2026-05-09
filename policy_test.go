@@ -101,6 +101,30 @@ callbacks.register("Draw", "MyLoop", function() end)
 	}
 }
 
+func TestValidUnregisterThenRegisterAfterFunctionDef(t *testing.T) {
+	// This tests the exact pattern from silent_aim.lua:
+	// A function definition, followed immediately by module-level
+	// callbacks.Unregister and callbacks.Register. Both calls are at depth 0.
+	src := `
+local function onFrameStage(stage)
+	if stage ~= 7 then
+		return
+	end
+end
+
+callbacks.Unregister("FrameStageNotify", "CD_SilentAim_FSN")
+callbacks.Register("FrameStageNotify", "CD_SilentAim_FSN", onFrameStage)
+`
+	path := writeTempLua(t, "unregister_after_function_def", src)
+	violations, err := checkLuaCallbackMutationPolicy(path, defaultLboxMutationPolicy)
+	if err != nil {
+		t.Fatalf("policy check error: %v", err)
+	}
+	if len(violations) != 0 {
+		t.Fatalf("expected no violations for module-level unregister->register after function def, got: %+v", violations)
+	}
+}
+
 func TestTopLevelRegisterAfterFunctionBlock(t *testing.T) {
 	src := `
 local function onEvent(event)
