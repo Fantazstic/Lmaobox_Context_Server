@@ -7,6 +7,8 @@
 - Check a condition: `player:InCond(TFCond_Taunting)`
 - Conditions live in the `TFCond_*` constants list (see `types/lmaobox_lua_api/constants/E_TFCOND.d.lua`)
 
+The supported way to read conditions is `Entity:InCond(...)` (there is no `GetCond` API).
+
 ### Curated Usage Examples
 
 #### Detect taunting
@@ -60,3 +62,6 @@ end
 - Try `smart_search("TFCond")` or `smart_search("taunt")` to find specific condition constants.
 - For the API method, use `smart_search("InCond")` then `get_smart_context("Entity.InCond")`.
 
+### Official Reference
+
+- https://lmaobox.net/lua/Lua_Constants/

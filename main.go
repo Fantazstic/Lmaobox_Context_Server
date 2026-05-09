@@ -22,7 +22,7 @@ import (
 
 const (
 	SERVER_NAME    = "LmaoboxContext"
-	SERVER_VERSION = "1.1.5"
+	SERVER_VERSION = "1.1.6"
 )
 
 type BundleRequest struct {
@@ -1036,13 +1036,18 @@ func resolveSmartContextRoot() string {
 }
 
 func extractTypeSignature(lines []string, symbol string) (string, int) {
-	shortSymbol := symbol
-	if dot := strings.LastIndex(symbol, "."); dot >= 0 {
-		shortSymbol = symbol[dot+1:]
+	trimmedSymbol := strings.TrimSpace(symbol)
+	shortSymbol := trimmedSymbol
+	if dot := strings.LastIndex(trimmedSymbol, "."); dot >= 0 {
+		shortSymbol = trimmedSymbol[dot+1:]
 	}
 
-	hasNamespace := strings.Contains(symbol, ".")
-	patternFull := regexp.MustCompile(`\b` + regexp.QuoteMeta(symbol) + `\b`)
+	hasNamespace := strings.Contains(trimmedSymbol, ".") || strings.Contains(trimmedSymbol, ":")
+	fullPatterns := typeSignaturePatterns(trimmedSymbol)
+	compiledFull := make([]*regexp.Regexp, 0, len(fullPatterns))
+	for _, pattern := range fullPatterns {
+		compiledFull = append(compiledFull, regexp.MustCompile(`\b`+regexp.QuoteMeta(pattern)+`\b`))
+	}
 	patternShort := regexp.MustCompile(`\b` + regexp.QuoteMeta(shortSymbol) + `\b`)
 
 	for index, raw := range lines {
@@ -1051,7 +1056,15 @@ func extractTypeSignature(lines []string, symbol string) (string, int) {
 			continue
 		}
 		if strings.Contains(trimmed, "function") {
-			matchesSymbol := hasNamespace && patternFull.MatchString(trimmed)
+			matchesSymbol := false
+			if hasNamespace {
+				for _, pattern := range compiledFull {
+					if pattern.MatchString(trimmed) {
+						matchesSymbol = true
+						break
+					}
+				}
+			}
 			matchesShort := !hasNamespace && patternShort.MatchString(trimmed)
 			if matchesSymbol || matchesShort {
 				return strings.TrimSuffix(trimmed, " end"), index
@@ -1072,6 +1085,43 @@ func extractTypeSignature(lines []string, symbol string) (string, int) {
 	}
 
 	return "", -1
+}
+
+func typeSignaturePatterns(symbol string) []string {
+	normalized := strings.ReplaceAll(symbol, "::", ".")
+	normalized = strings.ReplaceAll(normalized, "/", ".")
+	normalized = strings.TrimSpace(normalized)
+	if normalized == "" {
+		return nil
+	}
+
+	patterns := make([]string, 0, 4)
+	seen := make(map[string]bool)
+	add := func(value string) {
+		value = strings.TrimSpace(value)
+		if value == "" || seen[value] {
+			return
+		}
+		seen[value] = true
+		patterns = append(patterns, value)
+	}
+
+	add(normalized)
+	add(strings.ReplaceAll(normalized, ":", "."))
+
+	if strings.Contains(normalized, ".") {
+		parts := strings.Split(normalized, ".")
+		if len(parts) >= 2 {
+			firstColon := parts[0] + ":" + strings.Join(parts[1:], ".")
+			add(firstColon)
+
+			last := len(parts) - 1
+			lastColon := strings.Join(parts[:last], ".") + ":" + parts[last]
+			add(lastColon)
+		}
+	}
+
+	return patterns
 }
 
 func extractTypeDocblock(lines []string, signatureIndex int) string {
@@ -1328,6 +1378,7 @@ func findTypeDefinition(symbol string) (string, error) {
 
 func smartContextCandidatePaths(symbol string) []string {
 	normalized := strings.ReplaceAll(strings.ReplaceAll(strings.TrimSpace(symbol), "::", "."), "/", ".")
+	normalized = strings.ReplaceAll(normalized, ":", ".")
 	if normalized == "" {
 		return nil
 	}
@@ -2148,7 +2199,7 @@ func parseDLuaEntries(filePath, content string) []smartCandidate {
 		section = "entity_props"
 	}
 
-	funcRe := regexp.MustCompile(`^function\s+([\w.]+)\s*\(`)
+	funcRe := regexp.MustCompile(`^function\s+([\w.:]+)\s*\(`)
 	constRe := regexp.MustCompile(`^([A-Za-z_][A-Za-z0-9_]{2,})\s*=`)
 
 	lines := strings.Split(content, "\n")
@@ -2169,7 +2220,7 @@ func parseDLuaEntries(filePath, content string) []smartCandidate {
 
 			var symbolName string
 			if m := funcRe.FindStringSubmatch(trimmed); len(m) > 1 {
-				symbolName = m[1]
+				symbolName = strings.ReplaceAll(m[1], ":", ".")
 			}
 
 			desc := buildDesc(commentBlock)
@@ -2273,6 +2324,8 @@ func scoreSmartCandidate(queryLower string, tokens []string, queryNorm string, t
 		}
 	}
 
+	score += aliasBoostScore(queryNorm, tokensNorm, candidate)
+
 	for _, token := range tokens {
 		if strings.Contains(symbolLower, token) {
 			score += 30
@@ -2315,6 +2368,93 @@ func scoreSmartCandidate(queryLower string, tokens []string, queryNorm string, t
 	}
 
 	return score
+}
+
+func aliasBoostScore(queryNorm string, tokensNorm []string, candidate smartCandidate) float64 {
+	if queryNorm == "" {
+		return 0
+	}
+
+	hasToken := func(token string) bool {
+		if token == "" {
+			return false
+		}
+		if strings.Contains(queryNorm, token) {
+			return true
+		}
+		for _, t := range tokensNorm {
+			if t == token {
+				return true
+			}
+		}
+		return false
+	}
+
+	symbol := candidate.symbolNorm
+	if symbol == "" {
+		symbol = normalizeSearchText(candidate.Symbol)
+	}
+
+	boost := 0.0
+
+	if hasToken("tfcond") || hasToken("cond") || hasToken("conds") || hasToken("condition") || hasToken("conditions") || hasToken("taunt") {
+		if strings.HasPrefix(symbol, "entityincond") {
+			boost += 60
+		}
+		if strings.HasPrefix(symbol, "etfcond") {
+			boost += 45
+		}
+		if strings.HasPrefix(symbol, "tfcond") {
+			boost += 35
+		}
+	}
+
+	if hasToken("getcond") {
+		if strings.HasPrefix(symbol, "entityincond") {
+			boost += 85
+		}
+		if strings.HasPrefix(symbol, "etfcond") {
+			boost += 35
+		}
+	}
+
+	if hasToken("mshared") || hasToken("shared") || hasToken("playershared") || hasToken("playercond") || hasToken("playerconds") || hasToken("mnplayercond") || hasToken("netvar") {
+		if strings.HasPrefix(symbol, "entityincond") {
+			boost += 80
+		}
+		if strings.HasPrefix(symbol, "entitygetprop") {
+			boost += 25
+		}
+	}
+
+	if hasToken("convar") || hasToken("cvar") || hasToken("cvars") {
+		if strings.HasPrefix(symbol, "clientgetconvar") {
+			boost += 70
+		}
+		if strings.HasPrefix(symbol, "clientsetconvar") {
+			boost += 50
+		}
+		if strings.HasPrefix(symbol, "clientremoveconvarprotection") {
+			boost += 30
+		}
+	}
+
+	if hasToken("flag") || hasToken("flags") || hasToken("mfflags") || hasToken("mfflag") || hasToken("playerflag") || hasToken("playerflags") {
+		if strings.HasPrefix(symbol, "eplayerflag") {
+			boost += 60
+		}
+		if strings.HasPrefix(symbol, "entitygetprop") {
+			boost += 18
+		}
+	}
+
+	if hasToken("drawmodel") || hasToken("drawflags") || hasToken("studio") {
+		if strings.HasPrefix(symbol, "entitydrawmodel") {
+			boost += 70
+		}
+	}
+
+	return boost
 }
 
 func levenshteinDistanceMax(a string, b string, maxDist int) int {

@@ -12,6 +12,7 @@ dist/
 build/
 coverage/
 vscode-extension/*.vsix
+*.vsix
 bundle_output/
 bundle_test_output/
 bundle_test_deploy/
@@ -22,7 +23,8 @@ __pycache__/
 *.pyo
 
 # Editors
-.vscode/
+.vscode/*
+!.vscode/tasks.json
 .idea/
 
 # Processing zones (input/output churn)

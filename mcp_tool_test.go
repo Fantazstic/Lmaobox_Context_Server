@@ -244,6 +244,55 @@ func TestParseDLuaEntriesFindsMixedCaseConstants(t *testing.T) {
 	}
 }
 
+func TestParseDLuaEntriesNormalizesColonMethodsToDot(t *testing.T) {
+	content := "---@return boolean\nfunction Entity:InCond(condition) end\n"
+	entries := parseDLuaEntries("types/lmaobox_lua_api/Lua_Classes/Entity.d.lua", content)
+	if len(entries) == 0 {
+		t.Fatalf("expected at least 1 entry")
+	}
+
+	found := false
+	for _, entry := range entries {
+		if entry.Symbol == "Entity.InCond" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected to find Entity.InCond")
+	}
+}
+
+func TestTypeSignaturePatternsIncludeColonVariant(t *testing.T) {
+	patterns := typeSignaturePatterns("Entity.InCond")
+	found := false
+	for _, p := range patterns {
+		if p == "Entity:InCond" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected Entity:InCond pattern")
+	}
+}
+
+func TestAliasBoostSuggestsInCondForPlayerCondNetvar(t *testing.T) {
+	candidate := smartCandidate{
+		SmartSearchResult: SmartSearchResult{
+			Symbol: "Entity.InCond",
+		},
+		symbolNorm: normalizeSearchText("entity.incond"),
+	}
+
+	queryNorm := normalizeSearchText("m_nPlayerCond")
+	tokensNorm := []string{queryNorm}
+	boost := aliasBoostScore(queryNorm, tokensNorm, candidate)
+	if boost <= 0 {
+		t.Fatalf("expected positive alias boost for m_nPlayerCond")
+	}
+}
+
 func TestSmartSearchNormalizationMatchesUnderscoreQuery(t *testing.T) {
 	content := "---@type integer\nTFCond_Taunting = 7\n"
 	entries := parseDLuaEntries("types/lmaobox_lua_api/constants/E_TFCOND.d.lua", content)

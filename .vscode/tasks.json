@@ -1,0 +1,21 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"label": "Release (patch): bump+tag+push",
+			"type": "shell",
+			"command": "powershell",
+			"args": [
+				"-NoProfile",
+				"-ExecutionPolicy",
+				"Bypass",
+				"-File",
+				"${workspaceFolder}\\scripts\\release.ps1",
+				"-Bump",
+				"patch"
+			],
+			"problemMatcher": [],
+			"group": "build"
+		}
+	]
+}

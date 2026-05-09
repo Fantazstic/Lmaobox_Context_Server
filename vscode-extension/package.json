@@ -2,7 +2,7 @@
   "name": "lmaobox-context",
   "displayName": "Lmaobox Context",
   "description": "Automatically installs and configures the Lmaobox MCP server runtime for VS Code.",
-  "version": "1.1.5",
+  "version": "1.1.6",
   "publisher": "titaniummachine1",
   "license": "MIT",
   "engines": {
