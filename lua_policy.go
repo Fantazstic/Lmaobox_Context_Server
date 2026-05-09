@@ -134,6 +134,10 @@ func checkLuaCallbackMutationPolicy(filePath string, policy LboxMutationPolicy) 
 	violations := make([]luaPolicyViolation, 0)
 	functionDepthByLine := buildFunctionDepthByLine(tokens)
 	unregisteredAtDepthZero := make(map[string]bool)
+	
+	// Identify callback handler functions (those passed to callbacks.Register)
+	callbackHandlers := identifyCallbackHandlerFunctions(tokens)
+	callbackHandlerRanges := buildCallbackHandlerLineRanges(tokens, callbackHandlers)
 
 	for i := 0; i < len(tokens); i++ {
 		tok := tokens[i]
@@ -143,13 +147,18 @@ func checkLuaCallbackMutationPolicy(filePath string, policy LboxMutationPolicy) 
 			lineDepth := functionDepthByLine[line]
 			eventName := stringArgValue(args, 0)
 			uniqueID := stringArgValue(args, 1)
+			isInCallbackHandler := isLineInCallbackHandler(line, callbackHandlerRanges)
 
 			if strings.EqualFold(method, "register") {
 				if policy.ForbidDeprecatedCallbacks && strings.EqualFold(eventName, "PostPropUpdate") {
 					violations = append(violations, luaPolicyViolation{Line: line, Message: "CRITICAL: PostPropUpdate is deprecated legacy-only callback usage — use FrameStageNotify instead"})
 				}
 				if policy.RequireDepthZeroRegister && lineDepth > 0 {
-					violations = append(violations, luaPolicyViolation{Line: line, Message: "CRITICAL: callbacks.Register must be declared at depth 0 (global scope only)"})
+					if isInCallbackHandler {
+						violations = append(violations, luaPolicyViolation{Line: line, Message: "CRITICAL: callbacks.Register inside a callback handler function is forbidden — register all callbacks at module initialization time"})
+					} else {
+						violations = append(violations, luaPolicyViolation{Line: line, Message: "CRITICAL: callbacks.Register must be declared at depth 0 (global scope only)"})
+					}
 				}
 				if policy.RequireKillSwitchOrder && lineDepth == 0 && eventName != "" {
 					killSwitchKeyExact := strings.ToLower(eventName + "|" + uniqueID)
@@ -168,7 +177,11 @@ func checkLuaCallbackMutationPolicy(filePath string, policy LboxMutationPolicy) 
 				}
 				reportedRuntimeUnregister := false
 				if policy.ForbidRuntimeUnregister && lineDepth > 0 {
-					violations = append(violations, luaPolicyViolation{Line: line, Message: "CRITICAL: Illegal Unregister inside function scope (including Unload). Runtime callback table mutation is forbidden"})
+					if isInCallbackHandler {
+						violations = append(violations, luaPolicyViolation{Line: line, Message: "CRITICAL: Illegal Unregister inside a callback handler function — runtime callback table mutation is forbidden"})
+					} else {
+						violations = append(violations, luaPolicyViolation{Line: line, Message: "CRITICAL: Illegal Unregister inside function scope (including Unload). Runtime callback table mutation is forbidden"})
+					}
 					reportedRuntimeUnregister = true
 				}
 				if policy.RequireDepthZeroUnregister && lineDepth > 0 && !reportedRuntimeUnregister {
@@ -1276,6 +1289,83 @@ func cachedEntityUseHasIsValidGuard(lines []string, lineIndex int, varName strin
 	}
 	for i := start; i <= end; i++ {
 		if guardRe.MatchString(lines[i]) {
+			return true
+		}
+	}
+	return false
+}
+
+// identifyCallbackHandlerFunctions collects all function names that are registered as callback handlers
+func identifyCallbackHandlerFunctions(tokens []luaToken) map[string]bool {
+	handlers := make(map[string]bool)
+	for i := 0; i < len(tokens); i++ {
+		method, args, _, ok := extractCallbacksCall(tokens, i)
+		if !ok || !strings.EqualFold(method, "register") {
+			continue
+		}
+		// Get the handler argument (typically the 3rd argument)
+		if len(args) < 3 {
+			continue
+		}
+		// Check if it's a reference to a named function (not an inline function)
+		handlerArg := trimLuaArgTokens(args[2])
+		if len(handlerArg) == 1 && handlerArg[0].Kind == "ident" {
+			// This is a reference to a named function like: callbacks.Register("Event", "id", onEvent)
+			handlers[strings.ToLower(handlerArg[0].Text)] = true
+		}
+	}
+	return handlers
+}
+
+// buildCallbackHandlerLineRanges creates a map of line ranges for each callback handler function
+func buildCallbackHandlerLineRanges(tokens []luaToken, handlers map[string]bool) map[string][2]int {
+	ranges := make(map[string][2]int)
+	
+	// Find function definitions and their ranges
+	for i := 0; i < len(tokens); i++ {
+		if tokens[i].Kind != "keyword" || tokens[i].Text != "function" {
+			continue
+		}
+		
+		// Get function name
+		if i+1 >= len(tokens) || tokens[i+1].Kind != "ident" {
+			continue
+		}
+		
+		funcName := strings.ToLower(tokens[i+1].Text)
+		if !handlers[funcName] {
+			continue
+		}
+		
+		// Find the matching 'end' for this function
+		functionStartLine := tokens[i].Line
+		endLine := functionStartLine
+		depth := 1
+		
+		for j := i + 1; j < len(tokens); j++ {
+			if tokens[j].Kind == "keyword" {
+				if tokens[j].Text == "function" {
+					depth++
+				} else if tokens[j].Text == "end" {
+					depth--
+					if depth == 0 {
+						endLine = tokens[j].Line
+						break
+					}
+				}
+			}
+		}
+		
+		ranges[funcName] = [2]int{functionStartLine, endLine}
+	}
+	
+	return ranges
+}
+
+// isLineInCallbackHandler checks if a given line is inside any registered callback handler function
+func isLineInCallbackHandler(line int, ranges map[string][2]int) bool {
+	for _, lineRange := range ranges {
+		if line > lineRange[0] && line <= lineRange[1] {
 			return true
 		}
 	}
