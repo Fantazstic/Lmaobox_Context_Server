@@ -1,112 +1,112 @@
 ﻿{
-    "name": "lmaobox-context",
-    "displayName": "Lmaobox Context",
-    "description": "Automatically installs and configures the Lmaobox MCP server runtime for VS Code.",
-    "version": "1.1.4",
-    "publisher": "titaniummachine1",
-    "license": "MIT",
-    "engines": {
-        "vscode": "^1.95.0"
-    },
-    "categories": [
-        "Other",
-        "Snippets"
+  "name": "lmaobox-context",
+  "displayName": "Lmaobox Context",
+  "description": "Automatically installs and configures the Lmaobox MCP server runtime for VS Code.",
+  "version": "1.2.0",
+  "publisher": "titaniummachine1",
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.95.0"
+  },
+  "categories": [
+    "Other",
+    "Snippets"
+  ],
+  "keywords": [
+    "mcp",
+    "lmaobox",
+    "lua",
+    "copilot"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./extension.js",
+  "contributes": {
+    "snippets": [
+      {
+        "language": "lua",
+        "path": "./snippets/lmaobox.code-snippets"
+      }
     ],
-    "keywords": [
-        "mcp",
-        "lmaobox",
-        "lua",
-        "copilot"
+    "commands": [
+      {
+        "command": "lmaoboxContext.installOrUpdateRuntime",
+        "title": "Lmaobox Context: Install Or Update Runtime"
+      },
+      {
+        "command": "lmaoboxContext.openRuntimeFolder",
+        "title": "Lmaobox Context: Open Runtime Folder"
+      },
+      {
+        "command": "lmaoboxContext.openBundledDocsFolder",
+        "title": "Lmaobox Context: Open Bundled Docs Folder"
+      },
+      {
+        "command": "lmaoboxContext.syncExternalMcpConfigs",
+        "title": "Lmaobox Context: Sync External MCP Configs"
+      },
+      {
+        "command": "lmaoboxContext.injectLuaLibrary",
+        "title": "Lmaobox Context: Inject Lua Workspace Library"
+      }
     ],
-    "activationEvents": [
-        "onStartupFinished"
-    ],
-    "main": "./extension.js",
-    "contributes": {
-        "snippets": [
-            {
-                "language": "lua",
-                "path": "./snippets/lmaobox.code-snippets"
-            }
-        ],
-                        "commands":  [
-                                         {
-                                             "command":  "lmaoboxContext.installOrUpdateRuntime",
-                                             "title":  "Lmaobox Context: Install Or Update Runtime"
-                                         },
-                                         {
-                                             "command":  "lmaoboxContext.openRuntimeFolder",
-                                             "title":  "Lmaobox Context: Open Runtime Folder"
-                                         },
-                                         {
-                                             "command":  "lmaoboxContext.openBundledDocsFolder",
-                                             "title":  "Lmaobox Context: Open Bundled Docs Folder"
-                                         },
-                                         {
-                                             "command":  "lmaoboxContext.syncExternalMcpConfigs",
-                                             "title":  "Lmaobox Context: Sync External MCP Configs"
-                                         },
-                                         {
-                                             "command":  "lmaoboxContext.injectLuaLibrary",
-                                             "title":  "Lmaobox Context: Inject Lua Workspace Library"
-                                         }
-                                     ],
-                        "configuration":  {
-                                              "title":  "Lmaobox Context",
-                                              "properties":  {
-                                                                 "lmaoboxContext.autoConfigureMcp":  {
-                                                                                                         "type":  "boolean",
-                                                                                                         "default":  true,
-                                                                                                         "description":  "Automatically write the MCP server entry into VS Code user settings after the runtime is installed."
-                                                                                                     },
-                                                                 "lmaoboxContext.autoConfigureLuaLibrary":  {
-                                                                                                                "type":  "boolean",
-                                                                                                                "default":  true,
-                                                                                                                "description":  "Automatically configure LuaLS (Lua language server) workspace library paths for Lmaobox type definitions."
-                                                                                                            },
-                                                                 "lmaoboxContext.autoInjectExternalMcpConfigs":  {
-                                                                                                                     "type":  "boolean",
-                                                                                                                     "default":  true,
-                                                                                                                     "description":  "Automatically sync the MCP server entry into supported external MCP client config files such as Cursor, Windsurf, and Claude Desktop."
-                                                                                                                 },
-                                                                 "lmaoboxContext.releaseTag":  {
-                                                                                                   "type":  "string",
-                                                                                                   "default":  "",
-                                                                                                   "description":  "Override the GitHub release tag to install. Leave empty to use the extension version as v\u003cversion\u003e."
-                                                                                               },
-                                                                 "lmaoboxContext.repoOwner":  {
-                                                                                                  "type":  "string",
-                                                                                                  "default":  "titaniummachine1",
-                                                                                                  "description":  "GitHub owner used when downloading the packaged runtime release."
-                                                                                              },
-                                                                 "lmaoboxContext.repoName":  {
-                                                                                                 "type":  "string",
-                                                                                                 "default":  "Lmaobox_Context_Server",
-                                                                                                 "description":  "GitHub repository used when downloading the packaged runtime release."
-                                                                                             },
-                                                                 "lmaoboxContext.externalMcpServerName":  {
-                                                                                                              "type":  "string",
-                                                                                                              "default":  "lmaobox-context",
-                                                                                                              "description":  "Server name to use when writing external MCP config files."
-                                                                                                          },
-                                                                 "lmaoboxContext.externalMcpConfigPath":  {
-                                                                                                              "type":  "string",
-                                                                                                              "default":  "",
-                                                                                                              "description":  "Optional extra MCP config file path to sync in addition to known tools."
-                                                                                                          }
-                                                             }
-                                          }
-                    },
-    "repository":  {
-                       "type":  "git",
-                       "url":  "https://github.com/titaniummachine1/lmaobox-context-protocol.git"
-                   },
-    "bugs":  {
-                 "url":  "https://github.com/titaniummachine1/lmaobox-context-protocol/issues"
-             },
-    "homepage":  "https://github.com/titaniummachine1/lmaobox-context-protocol",
-    "icon":  "image.png",
-    "dependencies":  {
-                         "extract-zip":  "^2.0.1"
-                     }
+    "configuration": {
+      "title": "Lmaobox Context",
+      "properties": {
+        "lmaoboxContext.autoConfigureMcp": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically write the MCP server entry into VS Code user settings after the runtime is installed."
+        },
+        "lmaoboxContext.autoConfigureLuaLibrary": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically configure LuaLS (Lua language server) workspace library paths for Lmaobox type definitions."
+        },
+        "lmaoboxContext.autoInjectExternalMcpConfigs": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically sync the MCP server entry into supported external MCP client config files such as Cursor, Windsurf, and Claude Desktop."
+        },
+        "lmaoboxContext.releaseTag": {
+          "type": "string",
+          "default": "",
+          "description": "Override the GitHub release tag to install. Leave empty to use the extension version as v<version>."
+        },
+        "lmaoboxContext.repoOwner": {
+          "type": "string",
+          "default": "titaniummachine1",
+          "description": "GitHub owner used when downloading the packaged runtime release."
+        },
+        "lmaoboxContext.repoName": {
+          "type": "string",
+          "default": "Lmaobox_Context_Server",
+          "description": "GitHub repository used when downloading the packaged runtime release."
+        },
+        "lmaoboxContext.externalMcpServerName": {
+          "type": "string",
+          "default": "lmaobox-context",
+          "description": "Server name to use when writing external MCP config files."
+        },
+        "lmaoboxContext.externalMcpConfigPath": {
+          "type": "string",
+          "default": "",
+          "description": "Optional extra MCP config file path to sync in addition to known tools."
+        }
+      }
+    }
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/titaniummachine1/lmaobox-context-protocol.git"
+  },
+  "bugs": {
+    "url": "https://github.com/titaniummachine1/lmaobox-context-protocol/issues"
+  },
+  "homepage": "https://github.com/titaniummachine1/lmaobox-context-protocol",
+  "icon": "image.png",
+  "dependencies": {
+    "extract-zip": "^2.0.1"
+  }
 }
