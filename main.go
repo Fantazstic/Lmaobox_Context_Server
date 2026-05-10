@@ -1558,6 +1558,18 @@ func findSmartContext(symbol string) (string, error) {
 		return combined, nil
 	}
 
+	entityPropContext, entityPropErr := buildEntityPropSmartContext(symbol)
+	if entityPropErr != nil {
+		return "", entityPropErr
+	}
+	if entityPropContext != "" {
+		combined := combineTypeAndSmartContext(typeInfo, entityPropContext)
+		if snippetAppendix != "" {
+			combined = strings.Join([]string{combined, "---", snippetAppendix}, "\n\n")
+		}
+		return combined, nil
+	}
+
 	docMatches, docErr := searchDocPages(symbol, 1)
 	if docErr != nil {
 		return "", docErr
@@ -1583,6 +1595,127 @@ func findSmartContext(symbol string) (string, error) {
 	}
 
 	return "", nil
+}
+
+func buildEntityPropSmartContext(symbol string) (string, error) {
+	query := strings.TrimSpace(symbol)
+	if query == "" {
+		return "", nil
+	}
+	if !strings.HasPrefix(query, "m_") && !strings.Contains(query, ".m_") {
+		return "", nil
+	}
+
+	resolveFromSearch := func(q string) (SmartSearchResult, bool, error) {
+		primary, secondary, docs, err := smartSearch(q, 12)
+		if err != nil {
+			return SmartSearchResult{}, false, err
+		}
+
+		for _, r := range primary {
+			if r.Kind == "entity_prop" {
+				return r, true, nil
+			}
+		}
+		for _, r := range secondary {
+			if r.Kind == "entity_prop" {
+				return r, true, nil
+			}
+		}
+		for _, r := range docs {
+			if r.Kind == "entity_prop" {
+				return r, true, nil
+			}
+		}
+
+		return SmartSearchResult{}, false, nil
+	}
+
+	candidate := SmartSearchResult{}
+	hasCandidate := false
+	if strings.HasPrefix(query, "m_") {
+		r, ok, err := resolveFromSearch(query)
+		if err != nil {
+			return "", err
+		}
+		candidate = r
+		hasCandidate = ok
+	} else {
+		r, ok, err := resolveFromSearch(query)
+		if err != nil {
+			return "", err
+		}
+		candidate = r
+		hasCandidate = ok
+	}
+
+	if !hasCandidate {
+		return "", nil
+	}
+
+	parts := strings.Split(candidate.Symbol, ".")
+	if len(parts) < 2 {
+		return "", nil
+	}
+	propName := strings.TrimSpace(parts[len(parts)-1])
+	propType := strings.TrimSpace(candidate.Signature)
+	if propType == "" {
+		propType = "any"
+	}
+
+	getter := "Entity.GetPropInt"
+	if strings.HasPrefix(propName, "m_h") {
+		getter = "Entity.GetPropEntity"
+	} else if strings.HasPrefix(propName, "m_b") {
+		getter = "Entity.GetPropBool"
+	} else if strings.HasPrefix(propName, "m_fl") {
+		getter = "Entity.GetPropFloat"
+	} else if strings.HasPrefix(propName, "m_vec") || strings.HasPrefix(propName, "m_ang") {
+		getter = "Entity.GetPropVector"
+	} else if strings.EqualFold(propType, "string") {
+		getter = "Entity.GetPropString"
+	} else if strings.EqualFold(propType, "Vector3") {
+		getter = "Entity.GetPropVector"
+	}
+
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("## Entity Prop: %s\n\n", candidate.Symbol))
+	sb.WriteString(fmt.Sprintf("- Declared type: `%s`\n", propType))
+	sb.WriteString(fmt.Sprintf("- How to read: `get_smart_context(\"%s\")`\n\n", getter))
+
+	sb.WriteString("### Typical Read Pattern\n")
+	sb.WriteString("```lua\n")
+	sb.WriteString("local ent = entities.GetByIndex(idx)\n")
+	sb.WriteString("if ent then\n")
+	sb.WriteString(fmt.Sprintf("    local value = ent:%s(\"%s\")\n", strings.TrimPrefix(getter, "Entity."), propName))
+	sb.WriteString("end\n")
+	sb.WriteString("```\n\n")
+
+	propLower := strings.ToLower(propName)
+	if strings.Contains(propLower, "cond") || propName == "m_nPlayerCond" {
+		sb.WriteString("### TF2 Conditions\n")
+		sb.WriteString("- Preferred API: `get_smart_context(\"Entity.InCond\")`\n")
+		sb.WriteString("- Enum: `get_smart_context(\"E_TFCOND\")`\n\n")
+	}
+
+	if strings.Contains(propLower, "flags") || propName == "m_fFlags" {
+		sb.WriteString("### Flags\n")
+		sb.WriteString("- Enum: `get_smart_context(\"E_PlayerFlag\")`\n")
+		sb.WriteString("```lua\n")
+		sb.WriteString("local flags = ent:GetPropInt(\"m_fFlags\")\n")
+		sb.WriteString("local onGround = (flags & FL_ONGROUND) ~= 0\n")
+		sb.WriteString("```\n\n")
+	}
+
+	sb.WriteString("### Related Entity Prop APIs\n")
+	sb.WriteString("- `get_smart_context(\"Entity.GetPropInt\")`\n")
+	sb.WriteString("- `get_smart_context(\"Entity.GetPropFloat\")`\n")
+	sb.WriteString("- `get_smart_context(\"Entity.GetPropBool\")`\n")
+	sb.WriteString("- `get_smart_context(\"Entity.GetPropVector\")`\n")
+	sb.WriteString("- `get_smart_context(\"Entity.GetPropString\")`\n")
+	sb.WriteString("- `get_smart_context(\"Entity.GetPropEntity\")`\n")
+
+	return strings.TrimSpace(sb.String()), nil
 }
 
 func docPageTitle(content string, relPath string) string {

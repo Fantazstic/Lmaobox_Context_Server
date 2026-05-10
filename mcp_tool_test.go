@@ -445,6 +445,22 @@ func TestFindSmartContextFallsBackToLocalDocsContent(t *testing.T) {
 	}
 }
 
+func TestFindSmartContextGeneratesEntityPropHelp(t *testing.T) {
+	content, err := findSmartContext("CTFPlayer.m_nPlayerCond")
+	if err != nil {
+		t.Fatalf("findSmartContext error: %v", err)
+	}
+	if !strings.Contains(content, "## Entity Prop: CTFPlayer.m_nPlayerCond") {
+		t.Fatalf("expected entity prop header, got: %s", content)
+	}
+	if !strings.Contains(content, "Entity.GetProp") {
+		t.Fatalf("expected Entity.GetProp guidance, got: %s", content)
+	}
+	if !strings.Contains(content, "Entity.InCond") || !strings.Contains(content, "E_TFCOND") {
+		t.Fatalf("expected TF2 cond guidance, got: %s", content)
+	}
+}
+
 func TestHandleGetTypesReturnsClosestMatchesOnMiss(t *testing.T) {
 	result, err := handleGetTypes(context.Background(), mcp.CallToolRequest{
 		Params: struct {
