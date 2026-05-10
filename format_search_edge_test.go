@@ -27,6 +27,6 @@ func TestFormatSearchResultsEdgeCases(t *testing.T) {
 		},
 	}
 
-	out := formatSearchResultsMarkdown("draw text", results, snippetResults, 10)
+	out := formatSearchResultsMarkdown("draw text", results, snippetResults, nil, 10)
 	t.Log("\n" + out)
 }

@@ -263,6 +263,48 @@ func TestParseDLuaEntriesNormalizesColonMethodsToDot(t *testing.T) {
 	}
 }
 
+func TestParseDLuaEntriesIndexesEntityPropsFields(t *testing.T) {
+	content := "---@class CTFPlayer\n---@field m_nPlayerCond number\n"
+	entries := parseDLuaEntries("types/lmaobox_lua_api/entity_props/CTFPlayer.d.lua", content)
+	if len(entries) == 0 {
+		t.Fatalf("expected at least 1 entry")
+	}
+
+	foundClass := false
+	foundField := false
+	for _, entry := range entries {
+		if entry.Symbol == "CTFPlayer" {
+			foundClass = true
+			if entry.Kind != "class" {
+				t.Fatalf("expected Kind=class, got %s", entry.Kind)
+			}
+			if entry.Section != "entity_props" {
+				t.Fatalf("expected Section=entity_props, got %s", entry.Section)
+			}
+		}
+
+		if entry.Symbol == "CTFPlayer.m_nPlayerCond" {
+			foundField = true
+			if entry.Kind != "entity_prop" {
+				t.Fatalf("expected Kind=entity_prop, got %s", entry.Kind)
+			}
+			if entry.Section != "entity_props" {
+				t.Fatalf("expected Section=entity_props, got %s", entry.Section)
+			}
+			if entry.Signature != "number" {
+				t.Fatalf("expected Signature=number, got %s", entry.Signature)
+			}
+		}
+	}
+
+	if !foundClass {
+		t.Fatalf("expected to find CTFPlayer class entry")
+	}
+	if !foundField {
+		t.Fatalf("expected to find CTFPlayer.m_nPlayerCond field entry")
+	}
+}
+
 func TestTypeSignaturePatternsIncludeColonVariant(t *testing.T) {
 	patterns := typeSignaturePatterns("Entity.InCond")
 	found := false
@@ -311,11 +353,11 @@ func TestSmartSearchCommonQueriesReturnHelpfulSymbols(t *testing.T) {
 	}
 
 	for _, tc := range tests {
-		primary, secondary, err := smartSearch(tc.query, 25)
+		primary, secondary, docs, err := smartSearch(tc.query, 25)
 		if err != nil {
 			t.Fatalf("smartSearch(%q) error: %v", tc.query, err)
 		}
-		if len(primary) == 0 && len(secondary) == 0 {
+		if len(primary) == 0 && len(secondary) == 0 && len(docs) == 0 {
 			t.Fatalf("smartSearch(%q) returned no results", tc.query)
 		}
 
@@ -347,6 +389,59 @@ func TestSmartSearchCommonQueriesReturnHelpfulSymbols(t *testing.T) {
 			}
 			t.Fatalf("smartSearch(%q) missing expected %v; got %v", tc.query, tc.expected, syms)
 		}
+	}
+}
+
+func TestSmartSearchFindsTF2EntityPropsNetvars(t *testing.T) {
+	primary, secondary, docs, err := smartSearch("m_nPlayerCond", 25)
+	if err != nil {
+		t.Fatalf("smartSearch error: %v", err)
+	}
+	results := append(primary, secondary...)
+	results = append(results, docs...)
+
+	found := false
+	for _, r := range results {
+		if r.Symbol == "CTFPlayer.m_nPlayerCond" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		syms := make([]string, 0, len(results))
+		for _, r := range results {
+			syms = append(syms, r.Symbol)
+		}
+		t.Fatalf("expected to find CTFPlayer.m_nPlayerCond in results; got %v", syms)
+	}
+}
+
+func TestSmartSearchFallsBackToDocsPages(t *testing.T) {
+	primary, secondary, docs, err := smartSearch("mannpower king powerup", 10)
+	if err != nil {
+		t.Fatalf("smartSearch error: %v", err)
+	}
+	if len(docs) == 0 {
+		t.Fatalf("expected docs fallback results")
+	}
+	if docs[0].Kind != "doc_page" {
+		t.Fatalf("expected doc_page kind, got %s", docs[0].Kind)
+	}
+	if len(primary) == 0 && len(secondary) == 0 {
+		return
+	}
+}
+
+func TestFindSmartContextFallsBackToLocalDocsContent(t *testing.T) {
+	content, err := findSmartContext("mannpower king powerup")
+	if err != nil {
+		t.Fatalf("findSmartContext error: %v", err)
+	}
+	if !strings.Contains(content, "## Local Docs Fallback") {
+		t.Fatalf("expected local docs fallback header, got: %s", content)
+	}
+	if !strings.Contains(content, "Mannpower King Powerup") && !strings.Contains(content, "King Powerup") {
+		t.Fatalf("expected matched docs page content, got: %s", content)
 	}
 }
 
@@ -432,11 +527,10 @@ func TestHandleGetSmartContextReturnsClosestMatchesOnMiss(t *testing.T) {
 	}
 
 	text := fmt.Sprintf("%v", result.Content)
-	if !strings.Contains(text, "Closest matches") {
-		t.Fatalf("expected Closest matches section, got: %s", text)
-	}
-	if !strings.Contains(text, "Entity.InCond") {
-		t.Fatalf("expected Entity.InCond suggestion, got: %s", text)
+	hasClosest := strings.Contains(text, "Closest matches") && strings.Contains(text, "Entity.InCond")
+	hasDirect := strings.Contains(text, "Function/Symbol: Entity.InCond") || strings.Contains(text, "## Function/Symbol: Entity.InCond")
+	if !hasClosest && !hasDirect {
+		t.Fatalf("expected closest match suggestion or direct Entity.InCond match, got: %s", text)
 	}
 }
 
@@ -601,7 +695,7 @@ func TestFormatSearchResultsMarkdownIncludesSnippetSection(t *testing.T) {
 		Signature:   "callbacks.Register('Draw', 'Example', function()",
 	}}
 
-	output := formatSearchResultsMarkdown("draw", results, snippetResults, 10)
+	output := formatSearchResultsMarkdown("draw", results, snippetResults, nil, 10)
 
 	if !strings.Contains(output, "### Snippets (secondary matches)") {
 		t.Fatalf("expected snippet section in output, got: %s", output)
@@ -625,7 +719,7 @@ func TestFormatSearchResultsMarkdownSnippetOnlyNextSteps(t *testing.T) {
 		Signature:   "callbacks.Register('CreateMove', 'Example', function(cmd)",
 	}}
 
-	output := formatSearchResultsMarkdown("create move", nil, snippetResults, 10)
+	output := formatSearchResultsMarkdown("create move", nil, snippetResults, nil, 10)
 
 	if !strings.Contains(output, "Try snippet prefix `lm.createMove` in a Lua file") {
 		t.Fatalf("expected snippet-only next step, got: %s", output)
@@ -654,7 +748,7 @@ func TestFormatSearchResultsMarkdownUsesDisplayedPrimaryForNextSteps(t *testing.
 		},
 	}
 
-	output := formatSearchResultsMarkdown("trace line", results, nil, 8)
+	output := formatSearchResultsMarkdown("trace line", results, nil, nil, 8)
 
 	if !strings.Contains(output, "get_smart_context(\"engine.TraceLine\")") {
 		t.Fatalf("expected next steps to use first displayed primary result, got: %s", output)
@@ -662,6 +756,25 @@ func TestFormatSearchResultsMarkdownUsesDisplayedPrimaryForNextSteps(t *testing.
 
 	if strings.Contains(output, "get_smart_context(\"E_TraceLine\")") {
 		t.Fatalf("did not expect next steps to use hidden top-scoring symbol, got: %s", output)
+	}
+}
+
+func TestFormatSearchResultsMarkdownIncludesDocsContentSection(t *testing.T) {
+	docResults := []SmartSearchResult{{
+		Symbol:      "TF2 Conditions",
+		Kind:        "doc_page",
+		Section:     "docs",
+		Description: "Common TFCond_* constants for Entity:InCond checks",
+		Signature:   "TFConditions.md",
+	}}
+
+	output := formatSearchResultsMarkdown("mannpower king powerup", nil, nil, docResults, 8)
+
+	if !strings.Contains(output, "### Docs Pages (content matches)") {
+		t.Fatalf("expected docs content section, got: %s", output)
+	}
+	if !strings.Contains(output, "get_smart_context(\"TF2 Conditions\")") {
+		t.Fatalf("expected docs next steps, got: %s", output)
 	}
 }
 

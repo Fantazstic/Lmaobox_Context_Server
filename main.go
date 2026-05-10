@@ -79,6 +79,7 @@ type smartIndexState struct {
 	loaded     bool
 	candidates []smartCandidate
 	snippets   []smartCandidate
+	docs       []smartCandidate
 	loadErr    error
 }
 
@@ -315,7 +316,7 @@ func handleGetTypes(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallTool
 	}
 
 	if typeInfo == "" {
-		matches, _, _ := smartSearch(symbol, 8)
+		matches, _, _, _ := smartSearch(symbol, 8)
 		didYouMean := formatDidYouMeanSection(symbol, matches)
 
 		return mcp.NewToolResultText(fmt.Sprintf(
@@ -344,7 +345,7 @@ func handleGetSmartContext(ctx context.Context, req mcp.CallToolRequest) (*mcp.C
 	}
 
 	if contextInfo == "" {
-		matches, _, _ := smartSearch(symbol, 8)
+		matches, _, _, _ := smartSearch(symbol, 8)
 		didYouMean := formatDidYouMeanSection(symbol, matches)
 
 		// Try to fall back to type definition
@@ -1557,6 +1558,23 @@ func findSmartContext(symbol string) (string, error) {
 		return combined, nil
 	}
 
+	docMatches, docErr := searchDocPages(symbol, 1)
+	if docErr != nil {
+		return "", docErr
+	}
+	if len(docMatches) > 0 && docMatches[0].sourcePath != "" {
+		docContentBytes, readErr := os.ReadFile(docMatches[0].sourcePath)
+		if readErr != nil {
+			return "", readErr
+		}
+		docContent := string(docContentBytes)
+		combined := combineTypeAndSmartContext(typeInfo, "## Local Docs Fallback\n\nMatched from local markdown docs search.\n\n"+docContent)
+		if snippetAppendix != "" {
+			combined = strings.Join([]string{combined, "---", snippetAppendix}, "\n\n")
+		}
+		return combined, nil
+	}
+
 	if typeInfo != "" && snippetAppendix != "" {
 		return strings.Join([]string{typeInfo, "---", snippetAppendix}, "\n\n"), nil
 	}
@@ -1565,6 +1583,102 @@ func findSmartContext(symbol string) (string, error) {
 	}
 
 	return "", nil
+}
+
+func docPageTitle(content string, relPath string) string {
+	lines := strings.Split(content, "\n")
+	for _, raw := range lines {
+		line := strings.TrimSpace(raw)
+		if strings.HasPrefix(line, "## Function/Symbol:") {
+			title := strings.TrimSpace(strings.TrimPrefix(line, "## Function/Symbol:"))
+			if title != "" {
+				return title
+			}
+		}
+		if strings.HasPrefix(line, "# ") {
+			title := strings.TrimSpace(strings.TrimPrefix(line, "# "))
+			if title != "" {
+				return title
+			}
+		}
+		if strings.HasPrefix(line, "## ") {
+			title := strings.TrimSpace(strings.TrimPrefix(line, "## "))
+			if title != "" {
+				return title
+			}
+		}
+	}
+
+	base := strings.TrimSuffix(filepath.Base(relPath), filepath.Ext(relPath))
+	if strings.EqualFold(base, "index") {
+		base = filepath.Base(filepath.Dir(relPath))
+	}
+	return base
+}
+
+func docPageSummary(content string, relPath string) string {
+	lines := strings.Split(content, "\n")
+	for _, raw := range lines {
+		line := strings.TrimSpace(raw)
+		if line == "" {
+			continue
+		}
+		if strings.HasPrefix(line, "#") {
+			continue
+		}
+		if strings.HasPrefix(line, ">") {
+			summary := strings.TrimSpace(strings.TrimPrefix(line, ">"))
+			if summary != "" {
+				return summary
+			}
+		}
+		if strings.HasPrefix(line, "- ") || strings.HasPrefix(line, "|") || strings.HasPrefix(line, "```") {
+			continue
+		}
+		return line
+	}
+
+	return relPath
+}
+
+func searchDocPages(query string, limit int) ([]smartCandidate, error) {
+	if limit < 1 {
+		limit = 1
+	}
+
+	queryLower := strings.ToLower(strings.TrimSpace(query))
+	queryNorm := normalizeSearchText(queryLower)
+	tokens := strings.Fields(queryLower)
+	tokensNorm := make([]string, 0, len(tokens))
+	for _, token := range tokens {
+		tokensNorm = append(tokensNorm, normalizeSearchText(token))
+	}
+
+	_, _, docCandidates, err := getSmartIndex()
+	if err != nil {
+		return nil, err
+	}
+
+	matches := make([]smartCandidate, 0)
+	for _, candidate := range docCandidates {
+		candidate.Score = scoreSmartCandidate(queryLower, tokens, queryNorm, tokensNorm, candidate)
+		if candidate.Score >= 18 {
+			matches = append(matches, candidate)
+		}
+	}
+
+	sort.Slice(matches, func(i, j int) bool {
+		if matches[i].Score == matches[j].Score {
+			return matches[i].Symbol < matches[j].Symbol
+		}
+		return matches[i].Score > matches[j].Score
+	})
+
+	if len(matches) > limit {
+		matches = matches[:limit]
+	}
+
+	return matches, nil
 }
 
 func buildSnippetAppendix(symbol string) (string, error) {
@@ -1665,6 +1779,7 @@ type smartCandidate struct {
 	symbolLower   string
 	combinedNorm  string
 	symbolNorm    string
+	sourcePath    string
 }
 
 func normalizeSearchText(input string) string {
@@ -1708,29 +1823,82 @@ func buildSmartIndex() ([]smartCandidate, error) {
 	return candidates, nil
 }
 
-func getSmartIndex() ([]smartCandidate, []smartCandidate, error) {
+func buildDocPageCandidates() ([]smartCandidate, error) {
+	docsRoot := resolveSmartContextRoot()
+	results := make([]smartCandidate, 0)
+
+	err := filepath.WalkDir(docsRoot, func(path string, d fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return nil
+		}
+		if d.IsDir() || !strings.HasSuffix(strings.ToLower(d.Name()), ".md") {
+			return nil
+		}
+
+		contentBytes, readErr := os.ReadFile(path)
+		if readErr != nil {
+			return nil
+		}
+
+		content := string(contentBytes)
+		relPath, relErr := filepath.Rel(docsRoot, path)
+		if relErr != nil {
+			relPath = filepath.Base(path)
+		}
+		relPath = filepath.ToSlash(relPath)
+
+		title := docPageTitle(content, relPath)
+		summary := docPageSummary(content, relPath)
+		combined := strings.ToLower(title + " " + relPath + " " + summary + " " + content)
+		symbolLower := strings.ToLower(title)
+
+		results = append(results, smartCandidate{
+			SmartSearchResult: SmartSearchResult{
+				Symbol:      title,
+				Kind:        "doc_page",
+				Section:     "docs",
+				Description: summary,
+				Signature:   relPath,
+			},
+			combinedLower: combined,
+			symbolLower:   symbolLower,
+			combinedNorm:  normalizeSearchText(combined),
+			symbolNorm:    normalizeSearchText(symbolLower),
+			sourcePath:    path,
+		})
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	return results, nil
+}
+
+func getSmartIndex() ([]smartCandidate, []smartCandidate, []smartCandidate, error) {
 	globalSmartIndex.mu.RLock()
 	loaded := globalSmartIndex.loaded
 	loadErr := globalSmartIndex.loadErr
 	if loaded {
 		candidates := globalSmartIndex.candidates
 		snippets := globalSmartIndex.snippets
+		docs := globalSmartIndex.docs
 		globalSmartIndex.mu.RUnlock()
-		return candidates, snippets, loadErr
+		return candidates, snippets, docs, loadErr
 	}
 	globalSmartIndex.mu.RUnlock()
 
 	globalSmartIndex.mu.Lock()
 	defer globalSmartIndex.mu.Unlock()
 	if globalSmartIndex.loaded {
-		return globalSmartIndex.candidates, globalSmartIndex.snippets, globalSmartIndex.loadErr
+		return globalSmartIndex.candidates, globalSmartIndex.snippets, globalSmartIndex.docs, globalSmartIndex.loadErr
 	}
 
 	candidates, err := buildSmartIndex()
 	if err != nil {
 		globalSmartIndex.loaded = true
 		globalSmartIndex.loadErr = err
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 
 	snippetCandidates, snippetErr := loadSnippetCandidates()
@@ -1738,15 +1906,27 @@ func getSmartIndex() ([]smartCandidate, []smartCandidate, error) {
 		globalSmartIndex.loaded = true
 		globalSmartIndex.candidates = candidates
 		globalSmartIndex.snippets = nil
+		globalSmartIndex.docs = nil
 		globalSmartIndex.loadErr = snippetErr
-		return candidates, nil, snippetErr
+		return candidates, nil, nil, snippetErr
+	}
+
+	docCandidates, docErr := buildDocPageCandidates()
+	if docErr != nil {
+		globalSmartIndex.loaded = true
+		globalSmartIndex.candidates = candidates
+		globalSmartIndex.snippets = snippetCandidates
+		globalSmartIndex.docs = nil
+		globalSmartIndex.loadErr = docErr
+		return candidates, snippetCandidates, nil, docErr
 	}
 
 	globalSmartIndex.loaded = true
 	globalSmartIndex.candidates = candidates
 	globalSmartIndex.snippets = snippetCandidates
+	globalSmartIndex.docs = docCandidates
 	globalSmartIndex.loadErr = nil
-	return candidates, snippetCandidates, nil
+	return candidates, snippetCandidates, docCandidates, nil
 }
 
 func handleSmartSearch(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -1766,22 +1946,22 @@ func handleSmartSearch(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallT
 		}
 	}
 
-	results, snippetResults, err := smartSearch(query, limit)
+	results, snippetResults, docResults, err := smartSearch(query, limit)
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("Search failed: %v", err)), nil
 	}
 
-	output := formatSearchResultsMarkdown(query, results, snippetResults, limit)
+	output := formatSearchResultsMarkdown(query, results, snippetResults, docResults, limit)
 	return mcp.NewToolResultText(output), nil
 }
 
-func formatSearchResultsMarkdown(query string, results []SmartSearchResult, snippetResults []SmartSearchResult, limit int) string {
+func formatSearchResultsMarkdown(query string, results []SmartSearchResult, snippetResults []SmartSearchResult, docResults []SmartSearchResult, limit int) string {
 	var sb strings.Builder
 
 	sb.WriteString(fmt.Sprintf("## smart_search: `%s`\n", query))
 	sb.WriteString(fmt.Sprintf("_Returned %d primary results of up to %d_\n\n", len(results), limit))
 
-	if len(results) == 0 && len(snippetResults) == 0 {
+	if len(results) == 0 && len(snippetResults) == 0 && len(docResults) == 0 {
 		sb.WriteString("No matches found. Try broader terms or check spelling.\n")
 		sb.WriteString("\n**Tip:** Use `smart_search` with simpler keywords, e.g. `health`, `trace`, `draw`")
 		return sb.String()
@@ -1863,6 +2043,29 @@ func formatSearchResultsMarkdown(query string, results []SmartSearchResult, snip
 		sb.WriteString("_Snippet matches are a secondary pass after formal type/API matches._\n\n")
 	}
 
+	if len(docResults) > 0 {
+		sb.WriteString("### Docs Pages (content matches)\n")
+		sb.WriteString("| Page | Summary | Path |\n")
+		sb.WriteString("|---|---|---|\n")
+
+		for _, r := range docResults {
+			desc := r.Description
+			if len(desc) > 90 {
+				desc = desc[:87] + "..."
+			}
+			path := r.Signature
+			if len(path) > 70 {
+				path = path[:67] + "..."
+			}
+			desc = strings.ReplaceAll(desc, "|", `\|`)
+			path = strings.ReplaceAll(path, "|", `\|`)
+			sb.WriteString(fmt.Sprintf("| `%s` | %s | `%s` |\n", r.Symbol, desc, path))
+		}
+
+		sb.WriteString("\n")
+		sb.WriteString("_Docs matches come from the local mirrored markdown corpus and are included whenever the page content matches the query._\n\n")
+	}
+
 	// Suggest next steps based on top result
 	if hasPrimarySuggestion {
 		top := primarySuggestion
@@ -1879,6 +2082,12 @@ func formatSearchResultsMarkdown(query string, results []SmartSearchResult, snip
 		sb.WriteString("**Next steps:**\n")
 		sb.WriteString(fmt.Sprintf("- Try snippet prefix `%s` in a Lua file\n", top.Symbol))
 		sb.WriteString("- Re-run `smart_search` with the related API symbol or library for formal docs\n")
+	} else if len(docResults) > 0 {
+		top := docResults[0]
+		sb.WriteString("---\n")
+		sb.WriteString("**Next steps:**\n")
+		sb.WriteString(fmt.Sprintf("- Open the closest local docs page: `get_smart_context(\"%s\")`\n", top.Symbol))
+		sb.WriteString("- Re-run `smart_search` with shorter keywords if you want broader symbol matches\n")
 	}
 
 	return sb.String()
@@ -1924,13 +2133,13 @@ func sectionDisplayName(section string) string {
 	}
 }
 
-func smartSearch(query string, limit int) ([]SmartSearchResult, []SmartSearchResult, error) {
+func smartSearch(query string, limit int) ([]SmartSearchResult, []SmartSearchResult, []SmartSearchResult, error) {
 	queryLower := strings.ToLower(strings.TrimSpace(query))
 	queryNorm := normalizeSearchText(queryLower)
 
-	candidates, snippetCandidates, err := getSmartIndex()
+	candidates, snippetCandidates, docCandidates, err := getSmartIndex()
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 
 	tokens := strings.Fields(queryLower)
@@ -1981,6 +2190,30 @@ func smartSearch(query string, limit int) ([]SmartSearchResult, []SmartSearchRes
 		return snippetScored[i].Score > snippetScored[j].Score
 	})
 
+	var docScored []smartCandidate
+	for _, c := range docCandidates {
+		if c.symbolLower == "" {
+			c.symbolLower = strings.ToLower(c.Symbol)
+			c.symbolNorm = normalizeSearchText(c.symbolLower)
+		}
+		if c.combinedLower == "" {
+			c.combinedLower = strings.ToLower(c.Symbol + " " + c.Description + " " + c.Signature)
+		}
+		if c.combinedNorm == "" {
+			c.combinedNorm = normalizeSearchText(c.combinedLower)
+		}
+		c.Score = scoreSmartCandidate(queryLower, tokens, queryNorm, tokensNorm, c)
+		if c.Score >= 18 {
+			docScored = append(docScored, c)
+		}
+	}
+	sort.Slice(docScored, func(i, j int) bool {
+		if docScored[i].Score == docScored[j].Score {
+			return docScored[i].Symbol < docScored[j].Symbol
+		}
+		return docScored[i].Score > docScored[j].Score
+	})
+
 	if len(scored) > limit {
 		scored = scored[:limit]
 	}
@@ -1988,6 +2221,9 @@ func smartSearch(query string, limit int) ([]SmartSearchResult, []SmartSearchRes
 	snippetLimit := min(5, max(1, limit/3))
 	if len(snippetScored) > snippetLimit {
 		snippetScored = snippetScored[:snippetLimit]
+	}
+	if len(docScored) > limit {
+		docScored = docScored[:limit]
 	}
 
 	out := make([]SmartSearchResult, len(scored))
@@ -2000,7 +2236,12 @@ func smartSearch(query string, limit int) ([]SmartSearchResult, []SmartSearchRes
 		snippetOut[i] = c.SmartSearchResult
 	}
 
-	return out, snippetOut, nil
+	docOut := make([]SmartSearchResult, len(docScored))
+	for i, c := range docScored {
+		docOut[i] = c.SmartSearchResult
+	}
+
+	return out, snippetOut, docOut, nil
 }
 
 func loadSnippetCandidates() ([]smartCandidate, error) {
@@ -2202,9 +2443,12 @@ func parseDLuaEntries(filePath, content string) []smartCandidate {
 
 	funcRe := regexp.MustCompile(`^function\s+([\w.:]+)\s*\(`)
 	constRe := regexp.MustCompile(`^([A-Za-z_][A-Za-z0-9_]{2,})\s*=`)
+	entityClassRe := regexp.MustCompile(`^@class\s+([A-Za-z_][A-Za-z0-9_]*)`)
+	entityFieldRe := regexp.MustCompile(`^@field\s+([A-Za-z_][A-Za-z0-9_]*)\s+(.+)$`)
 
 	lines := strings.Split(content, "\n")
 	var commentBlock []string
+	currentEntityClass := ""
 
 	for _, line := range lines {
 		trimmed := strings.TrimSpace(line)
@@ -2212,6 +2456,62 @@ func parseDLuaEntries(filePath, content string) []smartCandidate {
 		if strings.HasPrefix(trimmed, "---") {
 			cleaned := strings.TrimLeft(trimmed, "-")
 			cleaned = strings.TrimSpace(cleaned)
+
+			if section == "entity_props" {
+				if m := entityClassRe.FindStringSubmatch(cleaned); len(m) > 1 {
+					currentEntityClass = m[1]
+					symbolLower := strings.ToLower(currentEntityClass)
+					combined := strings.ToLower(currentEntityClass)
+					results = append(results, smartCandidate{
+						SmartSearchResult: SmartSearchResult{
+							Symbol:    currentEntityClass,
+							Kind:      "class",
+							Section:   section,
+							Signature: currentEntityClass,
+						},
+						combinedLower: combined,
+						symbolLower:   symbolLower,
+						combinedNorm:  normalizeSearchText(combined),
+						symbolNorm:    normalizeSearchText(symbolLower),
+					})
+					commentBlock = commentBlock[:0]
+					continue
+				}
+
+				if m := entityFieldRe.FindStringSubmatch(cleaned); len(m) > 2 {
+					fieldName := m[1]
+					fieldType := strings.TrimSpace(m[2])
+
+					symbolName := fieldName
+					if currentEntityClass != "" {
+						symbolName = currentEntityClass + "." + fieldName
+					}
+
+					desc := ""
+					if currentEntityClass != "" {
+						desc = "Entity prop on " + currentEntityClass
+					}
+
+					symbolLower := strings.ToLower(symbolName)
+					combined := strings.ToLower(symbolName + " " + fieldName + " " + currentEntityClass + " " + desc + " " + fieldType)
+					results = append(results, smartCandidate{
+						SmartSearchResult: SmartSearchResult{
+							Symbol:      symbolName,
+							Kind:        "entity_prop",
+							Section:     section,
+							Description: desc,
+							Signature:   fieldType,
+						},
+						combinedLower: combined,
+						symbolLower:   symbolLower,
+						combinedNorm:  normalizeSearchText(combined),
+						symbolNorm:    normalizeSearchText(symbolLower),
+					})
+					commentBlock = commentBlock[:0]
+					continue
+				}
+			}
+
 			commentBlock = append(commentBlock, cleaned)
 			continue
 		}
