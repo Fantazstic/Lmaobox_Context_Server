@@ -297,8 +297,8 @@ func checkLuaCallbackMutationPolicy(filePath string, policy LboxMutationPolicy) 
 		if tok.Kind != "ident" {
 			continue
 		}
-		if policy.ForbidCollectGarbage && tok.Text == "collectgarbage" && i+1 < len(tokens) && tokens[i+1].Kind == "symbol" && tokens[i+1].Text == "(" {
-			violations = append(violations, luaPolicyViolation{Line: tok.Line, Message: "CRITICAL: collectgarbage() is forbidden — it masks memory leaks instead of fixing them"})
+		if policy.ForbidCollectGarbage && isForbiddenCollectGarbageCall(tokens, i) {
+			violations = append(violations, luaPolicyViolation{Line: tok.Line, Message: "WARNING: collectgarbage collection/control calls are forbidden — forcing GC in Lmaobox causes runtime lag and does not fix leaks; collectgarbage(\"count\") is allowed for read-only profiling"})
 		}
 		if policy.ForbidRequireInFunction && tok.Text == "require" && functionDepth2 > 0 && i+1 < len(tokens) && tokens[i+1].Kind == "symbol" && tokens[i+1].Text == "(" {
 			violations = append(violations, luaPolicyViolation{Line: tok.Line, Message: "CRITICAL: require() inside a function causes memory leaks — move all require() calls to the top of the file"})
@@ -931,6 +931,21 @@ func argContainsQualifiedCall(args [][]luaToken, root string, method string) boo
 	return findQualifiedCallLineInArgs(args, root, []string{method}) > 0
 }
 
+func isForbiddenCollectGarbageCall(tokens []luaToken, startIdx int) bool {
+	if startIdx+1 >= len(tokens) || tokens[startIdx].Text != "collectgarbage" || tokens[startIdx+1].Kind != "symbol" || tokens[startIdx+1].Text != "(" {
+		return false
+	}
+	args, _ := collectLuaCallArgs(tokens, startIdx+1)
+	if len(args) == 0 {
+		return true
+	}
+	mode := strings.ToLower(stringArgValue(args, 0))
+	if mode == "count" {
+		return false
+	}
+	return true
+}
+
 func findBuiltinGlobalValidationViolations(tokens []luaToken, startIdx int) []luaPolicyViolation {
 	violations := make([]luaPolicyViolation, 0)
 	if startIdx >= len(tokens) {
@@ -960,7 +975,7 @@ func findBuiltinGlobalValidationViolations(tokens []luaToken, startIdx int) []lu
 	if prevIdx >= 0 && tokens[prevIdx].Kind == "keyword" && tokens[prevIdx].Text == "if" {
 		violations = append(violations, luaPolicyViolation{
 			Line:    tok.Line,
-			Message: fmt.Sprintf("CRITICAL: Lmaobox built-in '%s' must NOT be validated with 'if' checks — these globals always exist at runtime. Remove the guard and call %s.SomeCall(...) directly", globalName, globalName),
+			Message: fmt.Sprintf("INFO: Lmaobox built-in '%s' is globally defined and always exists at runtime — assertion guards like 'if %s then' or 'assert(%s)' will not succeed as expected because the global exists but the check pattern is not meaningful. Remove the guard and call %s.SomeCall(...) directly", globalName, globalName, globalName, globalName),
 		})
 		return violations
 	}
@@ -971,7 +986,7 @@ func findBuiltinGlobalValidationViolations(tokens []luaToken, startIdx int) []lu
 		if (op == "~=" || op == "==" || op == "===" || op == "!=") && tokens[startIdx+2].Kind == "keyword" && tokens[startIdx+2].Text == "nil" {
 			violations = append(violations, luaPolicyViolation{
 				Line:    tok.Line,
-				Message: fmt.Sprintf("CRITICAL: Lmaobox built-in '%s' must NOT be checked against nil — these globals always exist at runtime. Remove the nil guard and call the API directly", globalName),
+				Message: fmt.Sprintf("INFO: Lmaobox built-in '%s' is globally defined and always exists at runtime — nil-check guards like '%s ~= nil' or 'assert(%s)' will not succeed as expected because the global exists but the check pattern is not meaningful. Remove the guard and call the API directly", globalName, globalName, globalName),
 			})
 			return violations
 		}
@@ -984,7 +999,7 @@ func findBuiltinGlobalValidationViolations(tokens []luaToken, startIdx int) []lu
 		if prevPrevIdx >= 0 && tokens[prevPrevIdx].Kind == "symbol" && tokens[prevPrevIdx].Text == "(" {
 			violations = append(violations, luaPolicyViolation{
 				Line:    tok.Line,
-				Message: fmt.Sprintf("CRITICAL: type(%s) is not a valid validation pattern — Lmaobox built-ins don't respond to type() checks. Remove the type() guard and call the API directly", globalName),
+				Message: fmt.Sprintf("INFO: Lmaobox built-in '%s' is globally defined and does not respond to type() checks — type guards like 'assert(type(%s) == \"userdata\")' will not succeed as expected. Remove the guard and call the API directly", globalName, globalName),
 			})
 			return violations
 		}
@@ -997,7 +1012,7 @@ func findBuiltinGlobalValidationViolations(tokens []luaToken, startIdx int) []lu
 		if prevPrevIdx >= 0 && tokens[prevPrevIdx].Kind == "ident" && tokens[prevPrevIdx].Text == "globals" {
 			violations = append(violations, luaPolicyViolation{
 				Line:    tok.Line,
-				Message: fmt.Sprintf("CRITICAL: Accessing Lmaobox built-in '%s' via 'globals.%s' is forbidden — these globals are always in scope. Remove the indirection and call %s.Method(...) directly", globalName, globalName, globalName),
+				Message: fmt.Sprintf("INFO: Lmaobox built-in '%s' is globally defined and always in scope — accessing via 'globals.%s' is unnecessary and the pattern does not work as expected. Remove the indirection and call %s.Method(...) directly", globalName, globalName, globalName),
 			})
 			return violations
 		}

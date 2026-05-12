@@ -860,9 +860,35 @@ end
 	if !strings.Contains(violations[0].Message, "collectgarbage") {
 		t.Fatalf("expected collectgarbage message, got: %s", violations[0].Message)
 	}
+	if !strings.Contains(violations[0].Message, "WARNING:") {
+		t.Fatalf("expected warning-level collectgarbage message, got: %s", violations[0].Message)
+	}
+	if strings.Contains(violations[0].Message, "CRITICAL:") {
+		t.Fatalf("collectgarbage collection warning should not be critical, got: %s", violations[0].Message)
+	}
 }
 
-// TestCollectGarbageAllowed verifies collectgarbage as a variable name is not flagged
+func TestCollectGarbageCountAllowed(t *testing.T) {
+	src := `
+local function memoryKb()
+    return collectgarbage("count")
+end
+`
+	path := createTempLuaFile(t, "collectgarbage_count", src)
+
+	violations, err := checkLuaCallbackMutationPolicy(path, defaultLboxMutationPolicy)
+	if err != nil {
+		t.Fatalf("policy check error: %v", err)
+	}
+
+	for _, v := range violations {
+		if strings.Contains(v.Message, "collectgarbage") {
+			t.Fatalf("collectgarbage(\"count\") should be allowed for read-only profiling, got: %s", v.Message)
+		}
+	}
+}
+
+// TestCollectGarbageNotACall verifies collectgarbage as a variable name is not flagged
 func TestCollectGarbageNotACall(t *testing.T) {
 	src := `
 local collectgarbage = nil
@@ -1501,5 +1527,89 @@ return __bundle_require("__root")
 	}
 	if !strings.Contains(resultText, "**Line in module:** 2") {
 		t.Fatalf("expected traceback to report module-relative line 2, got: %s", resultText)
+	}
+}
+
+// TestPolicyCheckManualTestFiles runs policy checks on the manual test files in test_policy_lua/
+func TestPolicyCheckManualTestFiles(t *testing.T) {
+	testDir := "test_policy_lua"
+	entries, err := os.ReadDir(testDir)
+	if err != nil {
+		t.Skipf("test_policy_lua directory not found: %v", err)
+		return
+	}
+
+	for _, entry := range entries {
+		if !strings.HasSuffix(entry.Name(), ".lua") {
+			continue
+		}
+		path := filepath.Join(testDir, entry.Name())
+		t.Run(entry.Name(), func(t *testing.T) {
+			violations, err := checkLuaCallbackMutationPolicy(path, defaultLboxMutationPolicy)
+			if err != nil {
+				t.Fatalf("policy check error: %v", err)
+			}
+
+			if len(violations) > 0 {
+				t.Logf("=== %s ===", entry.Name())
+				for _, v := range violations {
+					t.Logf("Line %d: %s", v.Line, v.Message)
+				}
+			} else {
+				t.Logf("=== %s === (no violations)", entry.Name())
+			}
+
+			switch entry.Name() {
+			case "collectgarbage_count_ok.lua":
+				if len(violations) > 0 {
+					t.Errorf("collectgarbage(\"count\") should be allowed, got %d violations", len(violations))
+				}
+			case "collectgarbage_collect_bad.lua":
+				if len(violations) == 0 {
+					t.Errorf("collectgarbage(\"collect\") should be flagged, got no violations")
+				}
+				found := false
+				for _, v := range violations {
+					if strings.Contains(v.Message, "collectgarbage") && strings.Contains(v.Message, "WARNING:") {
+						found = true
+					}
+				}
+				if !found {
+					t.Errorf("expected WARNING-level collectgarbage violation")
+				}
+			case "ipairs_findbyclass_bad.lua":
+				if len(violations) == 0 {
+					t.Errorf("ipairs on FindByClass should be flagged, got no violations")
+				}
+				found := false
+				for _, v := range violations {
+					if strings.Contains(v.Message, "sparse") && strings.Contains(v.Message, "CRITICAL:") {
+						found = true
+					}
+				}
+				if !found {
+					t.Errorf("expected CRITICAL sparse table violation")
+				}
+			case "pairs_findbyclass_ok.lua":
+				for _, v := range violations {
+					if strings.Contains(v.Message, "FindByClass") && strings.Contains(v.Message, "sparse") {
+						t.Errorf("pairs on FindByClass should be allowed, got: %s", v.Message)
+					}
+				}
+			case "engine_ifcheck_bad.lua":
+				if len(violations) == 0 {
+					t.Errorf("if engine then check should be flagged, got no violations")
+				}
+				found := false
+				for _, v := range violations {
+					if strings.Contains(v.Message, "engine") && strings.Contains(v.Message, "INFO:") {
+						found = true
+					}
+				}
+				if !found {
+					t.Errorf("expected INFO-level engine if-check violation")
+				}
+			}
+		})
 	}
 }

@@ -102,7 +102,7 @@ When using the MCP tool (`luacheck`, `bundle`, etc.), the validation automatical
 
 Example violation message:
 ```
-CRITICAL: Lmaobox built-in 'http' must NOT be validated with 'if' checks — these globals always exist at runtime. Remove the guard and call http.SomeCall(...) directly
+INFO: Lmaobox built-in 'http' is globally defined and always exists at runtime — assertion guards like 'if http then' or 'assert(http)' will not succeed as expected because the global exists but the check pattern is not meaningful. Remove the guard and call http.SomeCall(...) directly
 ```
 
 ## Configuration

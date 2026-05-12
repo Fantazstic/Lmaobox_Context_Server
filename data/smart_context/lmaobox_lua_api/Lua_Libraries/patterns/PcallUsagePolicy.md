@@ -13,10 +13,22 @@
 - Save you from nil-indexing on userdata objects
 - Catch segfaults, access violations, or any error that originates in C code
 
+## INFO: Runtime Policy
+
+Treat `pcall` as **exception catching for Lua code**, not as crash protection.
+
+In this codebase, `pcall` is only appropriate around:
+- IO / filesystem reads where user data may be malformed
+- Config deserialization (`load(...)` then `pcall(chunk)`)
+- Optional external libraries/modules that may throw Lua errors during load/init
+- Your own isolated Lua code that intentionally uses `error()` / `assert()`
+
+Avoid `pcall` in runtime hot paths and callbacks. It is especially wrong around Lmaobox APIs, `math.*`, `string.*`, and `table.*` calls.
+
 ### Required Context
 
 - Scope: Lua 5.4 standard library
-- Pattern: Use only when you specifically want to catch a Lua `error()` / `assert()` that you yourself may throw
+- Pattern: Use only when you specifically want to catch a Lua `error()` / `assert()`, usually at load/config/IO boundaries
 
 ### When pcall IS appropriate
 
@@ -58,6 +70,13 @@ local ok, s = pcall(string.format, "%d", 42)  -- string.format doesn't throw her
 
 -- ❌ WRONG: pcall around math/table operations — pointless
 local ok, v = pcall(math.max, 1, 2)  -- math.max never throws
+
+-- ❌ WRONG: pcall in runtime callbacks/hot paths — overhead with no crash safety
+callbacks.Register("Draw", "bad_pcall_runtime", function()
+    pcall(function()
+        draw.Color(255, 255, 255, 255)
+    end)
+end)
 ```
 
 ### Correct Lmaobox API Pattern (no pcall)
@@ -78,10 +97,12 @@ local inGame = engine.IsInGame()
 
 ## Summary
 
-| Use case | Use pcall? |
-|---|---|
-| Catching `error()` / `assert()` from your own Lua code | ✅ Yes |
-| Deserializing a Lua config chunk with `load()` | ✅ Yes |
-| Lmaobox API calls (`entities`, `engine`, `draw`, etc.) | ❌ No — call directly |
-| Pure Lua stdlib (`math`, `string`, `table`) | ❌ No — no overhead benefit |
-| "Protecting" against crashes | ❌ No — pcall cannot do this |
+| Use case                                                               | Use pcall?                            |
+| ---------------------------------------------------------------------- | ------------------------------------- |
+| Catching `error()` / `assert()` from your own Lua code                 | ✅ Yes                                 |
+| IO/config boundary (`io.open`, filesystem data, `load()` config chunk) | ✅ Yes                                 |
+| Optional external library/module loading                               | ✅ Yes                                 |
+| Lmaobox API calls (`entities`, `engine`, `draw`, etc.)                 | ❌ No — call directly                  |
+| Pure Lua stdlib (`math`, `string`, `table`)                            | ❌ No — no overhead benefit            |
+| Runtime callbacks / hot paths                                          | ❌ No — worst place for pcall overhead |
+| "Protecting" against crashes                                           | ❌ No — pcall cannot do this           |
