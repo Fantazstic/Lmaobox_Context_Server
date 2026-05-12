@@ -169,7 +169,8 @@ end)
 	}
 }
 
-// TestZeroMutationRegisterInNestedFunction tests register in nested function is banned
+// TestZeroMutationRegisterInNestedFunction tests register in load-time nested function is allowed.
+// Only register INSIDE a running callback handler is forbidden; load-time helper functions are fine.
 func TestZeroMutationRegisterInNestedFunction(t *testing.T) {
 	src := `
 local function setup()
@@ -187,12 +188,12 @@ setup()
 		t.Fatalf("policy check error: %v", err)
 	}
 
-	if len(violations) == 0 {
-		t.Fatalf("expected error for register in nested function")
-	}
-
-	if !strings.Contains(violations[0].Message, "depth 0") {
-		t.Fatalf("expected depth violation message, got: %s", violations[0].Message)
+	// Load-time helper function at depth > 0 is acceptable.
+	// Should NOT get a "callback handler" violation — may get a kill-switch violation (no unregister).
+	for _, v := range violations {
+		if strings.Contains(v.Message, "callback handler") {
+			t.Fatalf("false positive: load-time nested function flagged as callback handler: %s", v.Message)
+		}
 	}
 }
 
@@ -1230,9 +1231,12 @@ callbacks.register("Unload", function() running = false end)
 		t.Fatalf("policy check error: %v", err)
 	}
 
-	// Should catch that callbacks.register is inside a function (module wrapper)
-	if len(violations) == 0 {
-		t.Fatal("bundleMutationPolicy should still flag callbacks.register inside the module wrapper function")
+	// Bundle module wrapper is a load-time function, not a runtime callback handler.
+	// Register inside it is acceptable; only the kill-switch rule applies (unregister before register).
+	for _, v := range violations {
+		if strings.Contains(v.Message, "callback handler") {
+			t.Fatalf("bundle module wrapper incorrectly flagged as callback handler: %s", v.Message)
+		}
 	}
 }
 

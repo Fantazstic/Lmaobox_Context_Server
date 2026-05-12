@@ -28,7 +28,7 @@ end
 	}
 	found := false
 	for _, v := range violations {
-		if strings.Contains(v.Message, "must NOT be validated with 'if' checks") || strings.Contains(v.Message, "use direct pcall()") {
+		if strings.Contains(v.Message, "must NOT be validated with 'if' checks") || strings.Contains(v.Message, "always exist at runtime") {
 			found = true
 			break
 		}
@@ -59,7 +59,7 @@ end
 	}
 	found := false
 	for _, v := range violations {
-		if strings.Contains(v.Message, "must NOT be validated") || strings.Contains(v.Message, "use direct pcall()") {
+		if strings.Contains(v.Message, "must NOT be checked against nil") || strings.Contains(v.Message, "always exist at runtime") {
 			found = true
 			break
 		}

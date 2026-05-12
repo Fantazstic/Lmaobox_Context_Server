@@ -146,6 +146,27 @@ callbacks.register("FireGameEvent", "Database_Events", onEvent)
 	}
 }
 
+func TestTopLevelRegisterAfterFunctionWithWhileDoBlock(t *testing.T) {
+	src := `
+local function update()
+	while true do
+		break
+	end
+end
+
+callbacks.unregister("Draw", "MyLoop")
+callbacks.register("Draw", "MyLoop", update)
+`
+	path := writeTempLua(t, "top_level_after_while_do", src)
+	violations, err := checkLuaCallbackMutationPolicy(path, defaultLboxMutationPolicy)
+	if err != nil {
+		t.Fatalf("policy check error: %v", err)
+	}
+	if len(violations) != 0 {
+		t.Fatalf("expected no violations for top-level callback pair after while/do, got: %+v", violations)
+	}
+}
+
 func TestUnregisterInOnUnload(t *testing.T) {
 	src := `
 callbacks.register("Unload", function()
@@ -260,8 +281,8 @@ until false
 	// Register inside repeat block = depth 0 semantically (not in a function),
 	// so it should only report kill-switch, not "register at depth 0".
 	for _, v := range violations {
-		if strings.Contains(v.Message, "callbacks.Register must be declared at depth 0") {
-			t.Fatalf("repeat block incorrectly incremented function depth")
+		if strings.Contains(v.Message, "callbacks.Register inside a callback handler") {
+			t.Fatalf("repeat block incorrectly flagged as callback handler")
 		}
 	}
 }
@@ -304,7 +325,8 @@ callbacks.register("Draw", "MyLoop", function() end)
 }
 
 func TestNestedFunctionCallbacks(t *testing.T) {
-	// Nested function (function inside function) should increment depth.
+	// A callbacks.Register inside a load-time helper function (not a callback handler)
+	// is acceptable — only registering from within a running callback is forbidden.
 	src := `
 local function setup()
     local function innerRegister()
@@ -319,16 +341,11 @@ setup()
 	if err != nil {
 		t.Fatalf("policy check error: %v", err)
 	}
-	// Nested function => depth > 0 => register should fail
-	found := false
+	// Depth > 0 but NOT inside a callback handler => no Register violation expected.
 	for _, v := range violations {
-		if strings.Contains(v.Message, "callbacks.Register must be declared at depth 0") {
-			found = true
-			break
+		if strings.Contains(v.Message, "callbacks.Register inside a callback handler") {
+			t.Fatalf("false positive: load-time helper function incorrectly flagged as callback handler: %+v", violations)
 		}
-	}
-	if !found {
-		t.Fatalf("expected depth violation for nested function register, got: %+v", violations)
 	}
 }
 

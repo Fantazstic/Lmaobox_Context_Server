@@ -9,7 +9,9 @@ import (
 
 // knownLmaoboxBuiltinGlobals are special userdata/function objects exposed by the
 // Lmaobox runtime that do NOT respond to Lua type() checks, field lookups, or
-// existence probes. They MUST be called directly inside pcall() without validation.
+// existence probes. They must be called directly — no existence-check guards.
+// NOTE: pcall() does NOT protect against Lmaobox API crashes; it only catches Lua
+// errors (error()/assert). Never wrap Lmaobox API calls in pcall to "validate" them.
 var knownLmaoboxBuiltinGlobals = map[string]bool{
 	"http":      true,
 	"entities":  true,
@@ -153,12 +155,8 @@ func checkLuaCallbackMutationPolicy(filePath string, policy LboxMutationPolicy) 
 				if policy.ForbidDeprecatedCallbacks && strings.EqualFold(eventName, "PostPropUpdate") {
 					violations = append(violations, luaPolicyViolation{Line: line, Message: "CRITICAL: PostPropUpdate is deprecated legacy-only callback usage — use FrameStageNotify instead"})
 				}
-				if policy.RequireDepthZeroRegister && lineDepth > 0 {
-					if isInCallbackHandler {
-						violations = append(violations, luaPolicyViolation{Line: line, Message: "CRITICAL: callbacks.Register inside a callback handler function is forbidden — register all callbacks at module initialization time"})
-					} else {
-						violations = append(violations, luaPolicyViolation{Line: line, Message: "CRITICAL: callbacks.Register must be declared at depth 0 (global scope only)"})
-					}
+				if policy.RequireDepthZeroRegister && lineDepth > 0 && isInCallbackHandler {
+					violations = append(violations, luaPolicyViolation{Line: line, Message: "CRITICAL: callbacks.Register inside a callback handler function is forbidden — register all callbacks at module load time, never from within a running callback"})
 				}
 				if policy.RequireKillSwitchOrder && lineDepth == 0 && eventName != "" {
 					killSwitchKeyExact := strings.ToLower(eventName + "|" + uniqueID)
@@ -224,7 +222,7 @@ func checkLuaCallbackMutationPolicy(filePath string, policy LboxMutationPolicy) 
 						violations = append(violations, luaPolicyViolation{Line: nestedLine, Message: "CRITICAL: PostPropUpdate is deprecated legacy-only callback usage — use FrameStageNotify instead"})
 					}
 					if policy.RequireDepthZeroRegister && nestedDepth > 0 {
-						violations = append(violations, luaPolicyViolation{Line: nestedLine, Message: "CRITICAL: callbacks.Register must be declared at depth 0 (global scope only)"})
+						violations = append(violations, luaPolicyViolation{Line: nestedLine, Message: "CRITICAL: callbacks.Register inside a callback handler is forbidden — register all callbacks at module load time, never from within a running callback"})
 					}
 				}
 
@@ -250,6 +248,7 @@ func checkLuaCallbackMutationPolicy(filePath string, policy LboxMutationPolicy) 
 
 	functionDepth2 := 0
 	blockStack2 := make([]luaPolicyBlockKind, 0)
+	pendingLoopDo2 := 0
 	for i := 0; i < len(tokens); i++ {
 		tok := tokens[i]
 		if tok.Kind == "keyword" {
@@ -257,7 +256,16 @@ func checkLuaCallbackMutationPolicy(filePath string, policy LboxMutationPolicy) 
 			case "function":
 				blockStack2 = append(blockStack2, luaBlockFunction)
 				functionDepth2++
-			case "if", "for", "while", "do":
+			case "for", "while":
+				blockStack2 = append(blockStack2, luaBlockGeneric)
+				pendingLoopDo2++
+			case "do":
+				if pendingLoopDo2 > 0 {
+					pendingLoopDo2--
+					break
+				}
+				blockStack2 = append(blockStack2, luaBlockGeneric)
+			case "if":
 				blockStack2 = append(blockStack2, luaBlockGeneric)
 			case "repeat":
 				blockStack2 = append(blockStack2, luaBlockRepeat)
@@ -763,6 +771,7 @@ func findFunctionEndIndex(tokens []luaToken, functionIndex int) (int, bool) {
 	}
 
 	blockStack := []luaPolicyBlockKind{luaBlockFunction}
+	pendingLoopDo := 0
 	for i := functionIndex + 1; i < len(tokens); i++ {
 		tok := tokens[i]
 		if tok.Kind != "keyword" {
@@ -772,7 +781,16 @@ func findFunctionEndIndex(tokens []luaToken, functionIndex int) (int, bool) {
 		switch tok.Text {
 		case "function":
 			blockStack = append(blockStack, luaBlockFunction)
-		case "if", "for", "while", "do":
+		case "for", "while":
+			blockStack = append(blockStack, luaBlockGeneric)
+			pendingLoopDo++
+		case "do":
+			if pendingLoopDo > 0 {
+				pendingLoopDo--
+				break
+			}
+			blockStack = append(blockStack, luaBlockGeneric)
+		case "if":
 			blockStack = append(blockStack, luaBlockGeneric)
 		case "repeat":
 			blockStack = append(blockStack, luaBlockRepeat)
@@ -942,7 +960,7 @@ func findBuiltinGlobalValidationViolations(tokens []luaToken, startIdx int) []lu
 	if prevIdx >= 0 && tokens[prevIdx].Kind == "keyword" && tokens[prevIdx].Text == "if" {
 		violations = append(violations, luaPolicyViolation{
 			Line:    tok.Line,
-			Message: fmt.Sprintf("CRITICAL: Lmaobox built-in '%s' must NOT be validated with 'if' checks — use direct pcall() instead. Pattern: pcall(function() ... %s.SomeCall(...) ... end)", globalName, globalName),
+			Message: fmt.Sprintf("CRITICAL: Lmaobox built-in '%s' must NOT be validated with 'if' checks — these globals always exist at runtime. Remove the guard and call %s.SomeCall(...) directly", globalName, globalName),
 		})
 		return violations
 	}
@@ -953,7 +971,7 @@ func findBuiltinGlobalValidationViolations(tokens []luaToken, startIdx int) []lu
 		if (op == "~=" || op == "==" || op == "===" || op == "!=") && tokens[startIdx+2].Kind == "keyword" && tokens[startIdx+2].Text == "nil" {
 			violations = append(violations, luaPolicyViolation{
 				Line:    tok.Line,
-				Message: fmt.Sprintf("CRITICAL: Lmaobox built-in '%s' must NOT be checked against nil — the object exists but doesn't respond to validation. Use direct pcall() wrapping instead.", globalName),
+				Message: fmt.Sprintf("CRITICAL: Lmaobox built-in '%s' must NOT be checked against nil — these globals always exist at runtime. Remove the nil guard and call the API directly", globalName),
 			})
 			return violations
 		}
@@ -966,7 +984,7 @@ func findBuiltinGlobalValidationViolations(tokens []luaToken, startIdx int) []lu
 		if prevPrevIdx >= 0 && tokens[prevPrevIdx].Kind == "symbol" && tokens[prevPrevIdx].Text == "(" {
 			violations = append(violations, luaPolicyViolation{
 				Line:    tok.Line,
-				Message: fmt.Sprintf("CRITICAL: type(%s) is not a valid validation pattern — Lmaobox built-ins don't respond to type() checks. Use direct pcall() wrapping instead.", globalName),
+				Message: fmt.Sprintf("CRITICAL: type(%s) is not a valid validation pattern — Lmaobox built-ins don't respond to type() checks. Remove the type() guard and call the API directly", globalName),
 			})
 			return violations
 		}
@@ -979,15 +997,18 @@ func findBuiltinGlobalValidationViolations(tokens []luaToken, startIdx int) []lu
 		if prevPrevIdx >= 0 && tokens[prevPrevIdx].Kind == "ident" && tokens[prevPrevIdx].Text == "globals" {
 			violations = append(violations, luaPolicyViolation{
 				Line:    tok.Line,
-				Message: fmt.Sprintf("CRITICAL: Accessing Lmaobox built-in '%s' via 'globals.%s' requires direct pcall() wrapping — the indirection doesn't change the validation requirement", globalName, globalName),
+				Message: fmt.Sprintf("CRITICAL: Accessing Lmaobox built-in '%s' via 'globals.%s' is forbidden — these globals are always in scope. Remove the indirection and call %s.Method(...) directly", globalName, globalName, globalName),
 			})
 			return violations
 		}
 	}
 
 	// Pattern 5: standalone builtin global name in conditional context
-	// Look back for keywords to determine context
+	// Look back on the same line for keywords to determine context
 	for j := startIdx - 1; j >= 0 && startIdx-j < 10; j-- {
+		if tokens[j].Line != tok.Line {
+			break
+		}
 		if tokens[j].Kind == "whitespace" {
 			continue
 		}
@@ -995,7 +1016,7 @@ func findBuiltinGlobalValidationViolations(tokens []luaToken, startIdx int) []lu
 			if tokens[j].Text == "while" || tokens[j].Text == "until" || tokens[j].Text == "and" || tokens[j].Text == "or" {
 				violations = append(violations, luaPolicyViolation{
 					Line:    tok.Line,
-					Message: fmt.Sprintf("CRITICAL: Using '%s' in a conditional without pcall() validation is unsafe — Lmaobox built-ins require direct pcall(function() ... %s.Call(...) ... end) wrapping", globalName, globalName),
+					Message: fmt.Sprintf("CRITICAL: Using '%s' as a conditional guard is invalid — Lmaobox built-ins always exist and don't evaluate to truthy/falsy. Remove the conditional and call %s.Call(...) directly", globalName, globalName),
 				})
 				break
 			}
@@ -1233,6 +1254,7 @@ func buildFunctionDepthByLine(tokens []luaToken) map[int]int {
 	depthByLine := make(map[int]int)
 	blockStack := make([]luaPolicyBlockKind, 0)
 	functionDepth := 0
+	pendingLoopDo := 0
 
 	for _, tok := range tokens {
 		if _, ok := depthByLine[tok.Line]; !ok {
@@ -1245,7 +1267,16 @@ func buildFunctionDepthByLine(tokens []luaToken) map[int]int {
 		case "function":
 			blockStack = append(blockStack, luaBlockFunction)
 			functionDepth++
-		case "if", "for", "while", "do":
+		case "for", "while":
+			blockStack = append(blockStack, luaBlockGeneric)
+			pendingLoopDo++
+		case "do":
+			if pendingLoopDo > 0 {
+				pendingLoopDo--
+				break
+			}
+			blockStack = append(blockStack, luaBlockGeneric)
+		case "if":
 			blockStack = append(blockStack, luaBlockGeneric)
 		case "repeat":
 			blockStack = append(blockStack, luaBlockRepeat)

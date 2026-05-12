@@ -2,52 +2,45 @@
 
 ## Overview
 
-Lmaobox exposes certain globals (`http`, `entities`, `callbacks`, `engine`, `draw`, etc.) as special userdata/function objects that **do NOT respond to standard Lua validation patterns**. This protocol enforces safe patterns by forbidding dangerous validation checks and requiring direct `pcall()` wrapping for all built-in function calls.
+Lmaobox exposes certain globals (`http`, `entities`, `callbacks`, `engine`, `draw`, etc.) as special objects that **do NOT respond to standard Lua validation patterns**. This protocol enforces safe patterns by forbidding dangerous guard checks. These globals are always present at runtime — just call them directly.
+
+> **IMPORTANT — pcall misconception:** `pcall()` in Lua is a Lua-level error catcher only. It catches `error()` calls and failed assertions. It does **NOT** prevent crashes from Lmaobox C-API calls. Do not wrap Lmaobox API calls in `pcall()` thinking it protects against crashes — it does not, and it adds overhead with zero benefit for API calls.
 
 ## The Problem
 
-Attempting to validate Lmaobox built-in globals with standard Lua patterns causes silent failures or crashes:
+Attempting to validate Lmaobox built-in globals with standard Lua patterns causes silent failures or dead code:
 
 ```lua
--- ❌ FORBIDDEN: These all fail silently (object exists but doesn't validate)
-if http then end                      -- always false, misleading
-if entities ~= nil then end           -- always false, misleading
-if type(callbacks) == "userdata" then end  -- always false, misleading
+-- ❌ FORBIDDEN: These all produce wrong results (global exists but guards evaluate incorrectly)
+if http then end                           -- evaluates incorrectly, misleading guard
+if entities ~= nil then end               -- evaluates incorrectly, misleading guard
+if type(callbacks) == "userdata" then end -- always false, misleading
 
 -- ❌ FORBIDDEN: Indirection doesn't help
-if globals.http then end              -- still won't work
-local http_copy = http                -- creates invalid reference
-
--- ❌ FORBIDDEN: Fallback patterns crash at runtime
-local client = http or fallback       -- crashes when http.Get() is called
+if globals.http then end                  -- still wrong
+local client = http or fallback           -- fallback may be called incorrectly
 ```
 
 ## The Solution
 
-Always use direct `pcall()` wrapping. The runtime will raise an error if the function is truly unavailable (e.g., in free-run context without HTTP API):
+Call the API directly. These globals always exist at runtime in the Lmaobox environment:
 
 ```lua
--- ✅ CORRECT: Direct pcall() wrapping
-local function SafeHttpGet(url)
-    return pcall(function()
-        return http.Get(url)
-    end)
+-- ✅ CORRECT: Direct call, no guard needed
+local player = entities.GetLocalPlayer()
+if player then
+    print(player:GetHealth())
 end
 
--- Usage:
-local ok, result = SafeHttpGet("https://example.com")
-if ok then
-    print("Success:", result)
-else
-    print("Error:", result)
-end
+-- ✅ CORRECT: Just call it
+http.Get("https://example.com", function(body) print(body) end)
 ```
 
 ## Validation Rules
 
-The MCP tool and bundle validation now enforce:
+The MCP tool and bundle validation enforce:
 
-### 1. Forbidden: `if`/`while`/`until` checks
+### 1. Forbidden: `if`/`while`/`until` existence checks
 ```lua
 -- ❌ FORBIDDEN
 if http then
@@ -55,9 +48,7 @@ if http then
 end
 
 -- ✅ CORRECT
-if pcall(function() http.Get(url) end) then
-    -- ...
-end
+http.Get(url)
 ```
 
 ### 2. Forbidden: nil comparisons
@@ -67,7 +58,7 @@ if entities == nil then return end
 if callbacks ~= nil then ... end
 
 -- ✅ CORRECT
-return pcall(function() entities.GetLocalPlayer() end)
+local player = entities.GetLocalPlayer()
 ```
 
 ### 3. Forbidden: type() checks
@@ -76,9 +67,7 @@ return pcall(function() entities.GetLocalPlayer() end)
 if type(draw) == "userdata" then ... end
 
 -- ✅ CORRECT
-if pcall(function() draw.Color(255, 0, 0, 255) end) then
-    -- ...
-end
+draw.Color(255, 0, 0, 255)
 ```
 
 ### 4. Forbidden: globals.X access (indirect)
@@ -86,15 +75,13 @@ end
 -- ❌ FORBIDDEN
 if globals.http then ... end
 
--- ✅ CORRECT (if you must store reference)
-local http_fn = function(url)
-    return pcall(http.Get, url)
-end
+-- ✅ CORRECT
+http.Get(url)
 ```
 
 ## Known Lmaobox Built-In Globals
 
-The following globals require direct `pcall()` wrapping:
+The following globals are always in scope — call them directly without guards:
 
 - `http` – HTTP client
 - `entities` – Entity/player access
@@ -109,14 +96,13 @@ The following globals require direct `pcall()` wrapping:
 
 When using the MCP tool (`luacheck`, `bundle`, etc.), the validation automatically:
 
-1. **Detects** any use of forbidden patterns
+1. **Detects** any use of forbidden guard patterns
 2. **Reports** the violation with line number and explanation
 3. **Blocks** bundling if violations are found
 
 Example violation message:
 ```
-CRITICAL: Lmaobox built-in 'http' must NOT be validated with 'if' checks — use direct pcall() instead.
-Pattern: pcall(function() ... http.SomeCall(...) ... end)
+CRITICAL: Lmaobox built-in 'http' must NOT be validated with 'if' checks — these globals always exist at runtime. Remove the guard and call http.SomeCall(...) directly
 ```
 
 ## Configuration
@@ -150,60 +136,34 @@ The bundle tool will:
 
 ## Common Patterns
 
-### Safe HTTP Request
+### HTTP Request
 ```lua
--- ✅ CORRECT: Wrapped in pcall with error handling
-local function FetchData(url)
-    local ok, result = pcall(function()
-        return http.Get(url)
-    end)
-    
-    if not ok then
-        print("HTTP request failed:", result)
-        return nil
-    end
-    return result
-end
+-- ✅ CORRECT: Call directly
+http.Get("https://example.com", function(body)
+    print("Response:", body)
+end)
 ```
 
-### Safe Entity Access
+### Entity Access
 ```lua
--- ✅ CORRECT: Direct call in pcall
-local function GetMyPlayer()
-    local ok, player = pcall(function()
-        return entities.GetLocalPlayer()
-    end)
-    
-    if not ok or not player then
-        return nil
-    end
-    return player
-end
+-- ✅ CORRECT: Direct call, nil-check the result (entity may not exist)
+local player = entities.GetLocalPlayer()
+if not player then return end
+print(player:GetHealth())
 ```
 
-### Safe Draw Call
+### Draw Call
 ```lua
 -- ✅ CORRECT: Set state and draw in same callback
-function OnDraw()
+local function OnDraw()
     draw.Color(255, 0, 0, 255)
     draw.FilledRect(10, 10, 50, 50)
 end
 ```
 
-### Storing References
-```lua
--- ✅ CORRECT: Store wrapper function, not the reference itself
-local GetPlayer = function()
-    return pcall(entities.GetLocalPlayer)
-end
-
--- Usage:
-local ok, player = GetPlayer()
-```
-
 ## Migration Guide
 
-If you have existing code with forbidden patterns:
+If you have existing code with forbidden guard patterns:
 
 **Before:**
 ```lua
@@ -217,8 +177,8 @@ end
 
 **After:**
 ```lua
-local ok, player = pcall(entities.GetLocalPlayer)
-if ok and player then
+local player = entities.GetLocalPlayer()
+if player then
     print(player:GetHealth())
 end
 ```
@@ -236,19 +196,19 @@ This runs all tests related to the Lmaobox Built-In Globals Protocol validation.
 ## FAQ
 
 ### Q: Can I test if a global exists?
-**A:** No. Use `pcall()` and let it fail gracefully if unavailable.
+**A:** No — and you don't need to. These globals always exist in the Lmaobox runtime. Just call them.
 
 ### Q: Why not just use `type()`?
-**A:** Lmaobox built-ins don't respond to `type()`. They appear as neither "userdata" nor "function" to Lua's type system.
+**A:** Lmaobox built-ins don't respond to `type()` correctly. The check is meaningless.
 
-### Q: Can I assign a built-in to a variable?
-**A:** Only if you wrap calls to it in `pcall()`. Direct references won't work.
+### Q: Should I wrap API calls in pcall()?
+**A:** No. `pcall()` only catches Lua-level errors (`error()`, failed `assert()`). It does not protect against Lmaobox C-API crashes. Wrapping Lmaobox calls in `pcall()` adds overhead without any protection benefit.
 
 ### Q: What if the API call truly fails?
-**A:** The `pcall()` will return `false, error_message`. Check the first return value.
+**A:** The game will report the error via the Lua error system. Fix the root cause; don't mask it with pcall.
 
 ### Q: Does this apply to Lua standard library (math, table, string)?
-**A:** No, only Lmaobox-specific built-ins. Standard library validation is normal.
+**A:** No. Standard library globals are always valid in Lua 5.4 and need no guards.
 
 ## References
 
