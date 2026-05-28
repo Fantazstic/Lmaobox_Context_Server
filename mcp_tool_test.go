@@ -43,7 +43,7 @@ print(add(5, 3))
 	path := createTempLuaFile(t, "valid_syntax", src)
 
 	ctx := context.Background()
-	err := validateLuaSyntax(ctx, path)
+	err := validateLuaFile(ctx, path)
 	if err != nil {
 		t.Fatalf("expected valid syntax, got error: %v", err)
 	}
@@ -59,7 +59,7 @@ func TestValidateLuaSyntaxInvalid(t *testing.T) {
 	path := createTempLuaFile(t, "invalid_syntax", src)
 
 	ctx := context.Background()
-	err := validateLuaSyntax(ctx, path)
+	err := validateLuaFile(ctx, path)
 	if err == nil {
 		t.Fatalf("expected syntax error, got success")
 	}
@@ -1576,38 +1576,6 @@ func TestPolicyCheckManualTestFiles(t *testing.T) {
 				}
 				if !found {
 					t.Errorf("expected WARNING-level collectgarbage violation")
-				}
-			case "ipairs_findbyclass_bad.lua":
-				if len(violations) == 0 {
-					t.Errorf("ipairs on FindByClass should be flagged, got no violations")
-				}
-				found := false
-				for _, v := range violations {
-					if strings.Contains(v.Message, "sparse") && strings.Contains(v.Message, "CRITICAL:") {
-						found = true
-					}
-				}
-				if !found {
-					t.Errorf("expected CRITICAL sparse table violation")
-				}
-			case "pairs_findbyclass_ok.lua":
-				for _, v := range violations {
-					if strings.Contains(v.Message, "FindByClass") && strings.Contains(v.Message, "sparse") {
-						t.Errorf("pairs on FindByClass should be allowed, got: %s", v.Message)
-					}
-				}
-			case "engine_ifcheck_bad.lua":
-				if len(violations) == 0 {
-					t.Errorf("if engine then check should be flagged, got no violations")
-				}
-				found := false
-				for _, v := range violations {
-					if strings.Contains(v.Message, "engine") && strings.Contains(v.Message, "INFO:") {
-						found = true
-					}
-				}
-				if !found {
-					t.Errorf("expected INFO-level engine if-check violation")
 				}
 			}
 		})

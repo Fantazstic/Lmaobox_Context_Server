@@ -22,7 +22,7 @@ import (
 
 const (
 	SERVER_NAME    = "LmaoboxContext"
-	SERVER_VERSION = "1.2.0"
+	SERVER_VERSION = "1.2.4"
 )
 
 type BundleRequest struct {
@@ -108,10 +108,10 @@ func main() {
 		SERVER_VERSION,
 	)
 
-	// Add bundle tool
+	// Add bundle tool (bundling only — no syntax/policy checks; use luacheck for that)
 	bundleTool := mcp.NewTool(
 		"bundle",
-		mcp.WithDescription("Bundle and deploy Lua to %LOCALAPPDATA%/lua. Provide path to folder containing Main.lua or main.lua (case insensitive). That folder IS the bundle root - all require() calls resolve from there."),
+		mcp.WithDescription("Bundle and deploy Lua to %LOCALAPPDATA%/lua. Resolves require() paths, merges modules, writes build/Main.lua, and deploys. Does NOT run luac, policy heuristics, or luacheck — call the luacheck tool when you want validation. Project folder must contain Main.lua/main.lua (case insensitive); that folder is the bundle root."),
 		mcp.WithString("projectDir",
 			mcp.Required(),
 			mcp.Description("Path to folder containing Main.lua or main.lua. ABSOLUTE paths recommended. This folder becomes the bundle root. MUST contain Main.lua/main.lua unless entryFile is specified."),
@@ -129,16 +129,16 @@ func main() {
 
 	s.AddTool(bundleTool, handleBundle)
 
-	// Add luacheck tool
+	// Add luacheck tool (validation only — never deploys)
 	luacheckTool := mcp.NewTool(
 		"luacheck",
-		mcp.WithDescription("Validate Lua file syntax and optionally test bundling. Fast syntax check using Lua 5.4+ compiler (supports modern syntax like & operator) OR test if file bundles correctly without deploying."),
+		mcp.WithDescription("Validate Lua source: luac syntax (Lua 5.4+), Lmaobox policy heuristics (callbacks, require placement, pcall misuse, etc.), and luacheck lint when installed. Optional checkBundle=true dry-runs dependency resolution only (no deploy). Use bundle to build/deploy."),
 		mcp.WithString("filePath",
 			mcp.Required(),
 			mcp.Description("Absolute path to .lua file to check. Can be a single file or Main.lua for bundle validation."),
 		),
 		mcp.WithBoolean("checkBundle",
-			mcp.Description("If true, test if file/project bundles correctly (dry-run without deploy). If false (default), only run syntax check with luac."),
+			mcp.Description("If true, dry-run require() resolution for the project (no deploy, no policy). If false (default), validate the given file with luac + policy + luacheck."),
 		),
 	)
 
@@ -235,7 +235,7 @@ func handleBundle(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolRe
 		if bundleCtx.Err() == context.DeadlineExceeded {
 			return mcp.NewToolResultError("Bundle operation timed out after 30 seconds. This usually indicates:\n1. Circular dependency loop\n2. Very large project (try splitting into smaller modules)\n3. Invalid require() paths causing infinite resolution\nCheck your dependencies for cycles and fix require() paths."), nil
 		}
-		return mcp.NewToolResultError(fmt.Sprintf("Bundle failed: %v", err)), nil
+		return mcp.NewToolResultError(formatBundleToolError(err)), nil
 	}
 
 	return mcp.NewToolResultText(fmt.Sprintf("Bundle successful:\n%s", bundleResult)), nil
@@ -275,26 +275,14 @@ func handleLuacheck(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallTool
 
 		return mcp.NewToolResultText("✓ Bundle structure is valid and can be bundled successfully"), nil
 	} else {
-		if err := validateLuaSyntax(checkCtx, filePath); err != nil {
+		if err := validateLuaFile(checkCtx, filePath); err != nil {
 			if checkCtx.Err() == context.DeadlineExceeded {
-				return mcp.NewToolResultError("Syntax check timed out after 10 seconds"), nil
+				return mcp.NewToolResultError("Validation timed out after 10 seconds"), nil
 			}
 			return mcp.NewToolResultError(err.Error()), nil
 		}
 
-		advisories, err := collectLuaAdvisoryWarnings(filePath)
-		if err != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("warning scan failed: %v", err)), nil
-		}
-		if len(advisories) > 0 {
-			result := formatLuaValidationSuccessWithWarnings(advisories)
-			if statusText := luacheckNotReadyStatusText(); statusText != "" {
-				result = result + "\n\n" + statusText
-			}
-			return mcp.NewToolResultText(result), nil
-		}
-
-		result := "✓ Lua syntax is valid and passed Zero-Mutation callback policy"
+		result := "✓ Lua passed luac syntax, Lmaobox policy heuristics, and luacheck"
 		if statusText := luacheckNotReadyStatusText(); statusText != "" {
 			result = result + "\n\n" + statusText
 		}
@@ -431,20 +419,15 @@ func bundleLuaProject(ctx context.Context, projectDir, entryFile, bundleOutputDi
 		Stack:       make(map[string]bool),
 	}
 
-	// Validate all Lua files first
-	if err := validateAllLuaFiles(ctx, projectDirAbs); err != nil {
-		return "", fmt.Errorf("syntax validation failed: %v", err)
-	}
-
-	// Build dependency tree
+	// Resolve require() graph (no luac/policy — use luacheck tool for validation)
 	if err := buildDependencyTree(ctx, bundleCtx, entryFilePath); err != nil {
-		return "", fmt.Errorf("dependency analysis failed: %v", err)
+		return "", wrapBundleStageError("dependency resolution", err)
 	}
 
 	// Generate bundled output
 	bundledContent, mapEntries, err := generateBundledLua(bundleCtx, entryFilePath)
 	if err != nil {
-		return "", fmt.Errorf("bundle generation failed: %v", err)
+		return "", wrapBundleStageError("bundle generation", err)
 	}
 
 	// Write bundle to output directory
@@ -459,16 +442,7 @@ func bundleLuaProject(ctx context.Context, projectDir, entryFile, bundleOutputDi
 	}
 
 	if err := os.WriteFile(bundlePath, []byte(bundledContent), 0644); err != nil {
-		return "", fmt.Errorf("failed to write bundle: %v", err)
-	}
-
-	// Final validation: apply full heuristics (luac + Zero-Mutation policy +
-	// luacheck) to the merged bundle.  This reuses the same heuristic functions
-	// as per-file validation and catches merge-time issues such as a module that
-	// incorrectly registers callbacks at its source top-level (which becomes a
-	// nested function in the bundle -- a real runtime problem).
-	if err := validateBundledLua(ctx, bundlePath); err != nil {
-		return "", fmt.Errorf("bundled file failed validation: %v", err)
+		return "", wrapBundleStageError("writing build output", err)
 	}
 
 	// Write line-map alongside the bundle for traceback lookups
@@ -495,56 +469,13 @@ func bundleLuaProject(ctx context.Context, projectDir, entryFile, bundleOutputDi
 }
 
 func deploySingleFile(ctx context.Context, filePath, deployDir string) (string, error) {
-	// Validate syntax first
-	if err := validateLuaSyntax(ctx, filePath); err != nil {
-		return "", fmt.Errorf("syntax error: %v", err)
-	}
-
-	// Deploy single file
+	// Deploy single file (no validation — use luacheck tool first if needed)
 	deployPath, err := deployBundle(ctx, filePath, deployDir)
 	if err != nil {
 		return "", fmt.Errorf("deployment failed: %v", err)
 	}
 
 	return fmt.Sprintf("Single file deployed to: %s", deployPath), nil
-}
-
-func validateAllLuaFiles(ctx context.Context, projectDir string) error {
-	var files []string
-	err := filepath.WalkDir(projectDir, func(path string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return nil // Skip inaccessible files
-		}
-		if d.IsDir() {
-			// Skip build and hidden directories
-			base := filepath.Base(path)
-			if base == "build" || base == "node_modules" || strings.HasPrefix(base, ".") {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		if strings.HasSuffix(path, ".lua") {
-			files = append(files, path)
-		}
-		return nil
-	})
-	if err != nil {
-		return err
-	}
-
-	for _, file := range files {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		default:
-		}
-		if err := validateLuaSyntax(ctx, file); err != nil {
-			relPath, _ := filepath.Rel(projectDir, file)
-			return fmt.Errorf("syntax error in %s: %v", relPath, err)
-		}
-	}
-
-	return nil
 }
 
 func buildDependencyTree(ctx context.Context, bundleCtx *BundleContext, entryFile string) error {
@@ -843,7 +774,6 @@ func findEntryFile(projectDir string) (string, error) {
 }
 
 func validateBundleStructure(ctx context.Context, projectDir, entryFile string) error {
-	// Resolve paths
 	projectDirAbs, err := filepath.Abs(projectDir)
 	if err != nil {
 		return fmt.Errorf("invalid project directory: %v", err)
@@ -854,12 +784,10 @@ func validateBundleStructure(ctx context.Context, projectDir, entryFile string) 
 		return fmt.Errorf("entry file not found: %s", entryFilePath)
 	}
 
-	// For non-Main.lua files, just validate syntax
 	if !strings.EqualFold(entryFile, "main.lua") {
-		return validateLuaSyntax(ctx, entryFilePath)
+		return runLuacSyntaxCheck(ctx, entryFilePath)
 	}
 
-	// Create bundle context for dependency validation
 	bundleCtx := &BundleContext{
 		ProjectDir:  projectDirAbs,
 		SearchPaths: []string{projectDirAbs},
@@ -868,30 +796,18 @@ func validateBundleStructure(ctx context.Context, projectDir, entryFile string) 
 		Stack:       make(map[string]bool),
 	}
 
-	// Validate all Lua files
-	if err := validateAllLuaFiles(ctx, projectDirAbs); err != nil {
-		return fmt.Errorf("syntax validation failed: %v", err)
-	}
-
-	// Test dependency resolution without writing files
 	if err := buildDependencyTree(ctx, bundleCtx, entryFilePath); err != nil {
-		return fmt.Errorf("dependency analysis failed: %v", err)
+		return fmt.Errorf("require() resolution failed: %v", err)
 	}
 
 	return nil
 }
 
-func validateLuaSyntax(ctx context.Context, filePath string) error {
-	luacPath := findLuac()
-	if luacPath == "" {
-		return fmt.Errorf("Lua compiler not found. Install Lua 5.4+ from https://luabinaries.sourceforge.net/")
-	}
-
-	cmd := exec.CommandContext(ctx, luacPath, "-p", filePath)
-	output, err := cmd.CombinedOutput()
-
-	if err != nil {
-		return fmt.Errorf("syntax error: %s", string(output))
+// validateLuaFile runs luac syntax, Lmaobox policy heuristics, and luacheck lint.
+// Used by the luacheck MCP tool only — not by bundle.
+func validateLuaFile(ctx context.Context, filePath string) error {
+	if err := runLuacSyntaxCheck(ctx, filePath); err != nil {
+		return err
 	}
 
 	violations, err := checkLuaCallbackMutationPolicy(filePath, defaultLboxMutationPolicy)
@@ -902,13 +818,9 @@ func validateLuaSyntax(ctx context.Context, filePath string) error {
 		return fmt.Errorf(formatLuaPolicyViolations(filePath, violations))
 	}
 
-	// Additional lint pass: run luacheck. Since we ensure luacheck is installed
-	// at startup, this should never fail with "not found". If it does, it's a
-	// runtime error that should be reported.
 	luacheckIssues, lerr := runLuacheck(ctx, filePath)
 	if lerr != nil {
 		if errors.Is(lerr, errLuacheckNotFound) {
-			// luacheck not installed — policy check already passed, so succeed gracefully
 			return nil
 		}
 		return fmt.Errorf("luacheck failed: %v", lerr)
@@ -920,6 +832,45 @@ func validateLuaSyntax(ctx context.Context, filePath string) error {
 	return nil
 }
 
+func runLuacSyntaxCheck(ctx context.Context, filePath string) error {
+	luacPath := findLuac()
+	if luacPath == "" {
+		return fmt.Errorf("Lua compiler not found. Install Lua 5.4+ from https://luabinaries.sourceforge.net/")
+	}
+
+	cmd := exec.CommandContext(ctx, luacPath, "-p", filePath)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("syntax error in %s:\n%s", filePath, strings.TrimSpace(string(output)))
+	}
+	return nil
+}
+
+func wrapBundleStageError(stage string, err error) error {
+	if err == nil {
+		return nil
+	}
+	return fmt.Errorf(
+		"%s failed: %v\n\n"+
+			"Bundle only merges require() modules and deploys — it does not validate Lua.\n"+
+			"Typical fixes: correct require() paths, remove circular requires, ensure each module is a .lua file under the project root (or installed globally in %%LOCALAPPDATA%%/lua).\n"+
+			"Run the luacheck tool when you want syntax, policy, or luacheck lint.",
+		stage, err,
+	)
+}
+
+func formatBundleToolError(err error) string {
+	if err == nil {
+		return "Bundle failed"
+	}
+	return fmt.Sprintf(
+		"Bundle failed: %v\n\n"+
+			"The bundle tool only resolves require(), writes build/Main.lua, and deploys.\n"+
+			"It does not run luac or policy checks — use the luacheck tool for validation.",
+		err,
+	)
+}
+
 func formatLuacheckIssues(filePath string, issues []string) string {
 	var builder strings.Builder
 	builder.WriteString("Luacheck reported issue(s):\n")
@@ -929,16 +880,6 @@ func formatLuacheckIssues(filePath string, issues []string) string {
 		builder.WriteString(fmt.Sprintf("- %s\n", issue))
 	}
 
-	return builder.String()
-}
-
-func formatLuaValidationSuccessWithWarnings(warnings []string) string {
-	var builder strings.Builder
-	builder.WriteString("✓ Lua syntax is valid and passed Zero-Mutation callback policy\n")
-	builder.WriteString("\nStyle warning(s):\n")
-	for _, warning := range warnings {
-		builder.WriteString(fmt.Sprintf("- %s\n", warning))
-	}
 	return builder.String()
 }
 
@@ -3046,51 +2987,6 @@ func runLuacheckWithGlobals(ctx context.Context, filePath string, extraGlobals [
 	}
 
 	return issues, nil
-}
-
-// validateBundledLua applies the full heuristic validation suite to the final
-// bundled Lua file, reusing the same functions used for per-file validation:
-//
-//  1. luac syntax check (runLuacOnly)
-//  2. Zero-Mutation policy check (checkLuaCallbackMutationPolicy with
-//     bundleMutationPolicy -- same function, bundle-safe policy variant)
-//  3. luacheck lint (runLuacheckWithGlobals -- same core logic as runLuacheck,
-//     with bundle infrastructure globals declared to suppress false positives)
-//
-// This is intentionally not lightweight: it is the last safety net before
-// deployment and is meant to catch mistakes that per-file validation cannot
-// (e.g. a module that registers callbacks at its source top-level, which in the
-// bundle becomes nested inside a wrapper function -- a real runtime problem).
-func validateBundledLua(ctx context.Context, filePath string) error {
-	// Step 1: syntax
-	if err := runLuacOnly(ctx, filePath); err != nil {
-		return fmt.Errorf("bundled file syntax error: %v", err)
-	}
-
-	// Step 2: Zero-Mutation / heuristic policy (reused function, bundle policy variant)
-	violations, err := checkLuaCallbackMutationPolicy(filePath, bundleMutationPolicy)
-	if err != nil {
-		return fmt.Errorf("policy check on bundle failed: %v", err)
-	}
-	if len(violations) > 0 {
-		return fmt.Errorf(formatLuaPolicyViolations(filePath, violations))
-	}
-
-	// Step 3: luacheck (reused core logic; bundle infrastructure globals declared
-	// to avoid false "undefined global" warnings for __bundle_* variables).
-	bundleGlobals := []string{"__bundle_modules", "__bundle_require", "__bundle_loaded"}
-	luacheckIssues, lerr := runLuacheckWithGlobals(ctx, filePath, bundleGlobals)
-	if lerr != nil {
-		if errors.Is(lerr, errLuacheckNotFound) {
-			return nil // luacheck not installed -- policy check already passed
-		}
-		return fmt.Errorf("luacheck on bundle failed: %v", lerr)
-	}
-	if len(luacheckIssues) > 0 {
-		return fmt.Errorf(formatLuacheckIssues(filePath, luacheckIssues))
-	}
-
-	return nil
 }
 
 // resolveBundleLuaPath resolves the bundle .lua file path from:

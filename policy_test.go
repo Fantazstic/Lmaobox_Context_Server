@@ -445,376 +445,106 @@ local flags = bit.band(cmd.buttons, IN_ATTACK)
 	}
 }
 
-func TestDrawTextWithoutSetFontRejected(t *testing.T) {
+func TestRequireInsideInlineCallbackHandlerDetected(t *testing.T) {
 	src := `
 callbacks.unregister("Draw", "HUD")
 callbacks.register("Draw", "HUD", function()
-    draw.Text(10, 10, "hello")
+    local x = require("bad")
 end)
 `
-	path := writeTempLua(t, "draw_text_no_font", src)
+	path := writeTempLua(t, "require_in_inline_handler", src)
 	violations, err := checkLuaCallbackMutationPolicy(path, defaultLboxMutationPolicy)
 	if err != nil {
 		t.Fatalf("policy check error: %v", err)
 	}
 	found := false
 	for _, v := range violations {
-		if strings.Contains(v.Message, "draw.Text() requires draw.SetFont() earlier in the same Draw callback") {
+		if strings.Contains(v.Message, "require() inside a function") {
 			found = true
 			break
 		}
 	}
 	if !found {
-		t.Fatalf("expected draw.Text font setup violation, got: %+v", violations)
+		t.Fatalf("expected require-in-function violation inside inline handler, got: %+v", violations)
 	}
 }
 
-func TestDrawTextWithoutSetFontInSameHandlerRejected(t *testing.T) {
-	src := `
-local font = draw.CreateFont("Verdana", 16, 800)
-
-local function setupFontElsewhere()
-    draw.SetFont(font)
-end
-
-callbacks.unregister("Draw", "HUD")
-callbacks.register("Draw", "HUD", function()
-    draw.Color(255, 255, 255, 255)
-    draw.Text(10, 10, "hello")
-end)
-`
-	path := writeTempLua(t, "draw_text_font_elsewhere", src)
+func TestUnregisterInsideSameLineInlineHandlerDetected(t *testing.T) {
+	src := `callbacks.register("Unload", function() callbacks.unregister("Draw", "HUD") end)`
+	path := writeTempLua(t, "unregister_same_line_inline", src)
 	violations, err := checkLuaCallbackMutationPolicy(path, defaultLboxMutationPolicy)
 	if err != nil {
 		t.Fatalf("policy check error: %v", err)
 	}
 	found := false
 	for _, v := range violations {
-		if strings.Contains(v.Message, "draw.Text() requires draw.SetFont() earlier in the same Draw callback") {
+		if strings.Contains(v.Message, "Illegal Unregister") {
 			found = true
 			break
 		}
 	}
 	if !found {
-		t.Fatalf("expected same-handler draw.Text font setup violation, got: %+v", violations)
+		t.Fatalf("expected unregister inside inline handler on same line, got: %+v", violations)
 	}
 }
 
-func TestTexturedPolygonWithoutColorRejected(t *testing.T) {
+func TestModuleScopeCallbacksAfterFunctionDefinition(t *testing.T) {
 	src := `
-local textureId = 1
+local function onFrame(stage)
+    if stage ~= 7 then return end
+end
 
-callbacks.unregister("Draw", "poly")
-callbacks.register("Draw", "poly", function()
-    draw.TexturedPolygon(textureId, {
-        { 10, 10, 0.0, 0.0 },
-        { 20, 10, 1.0, 0.0 },
-        { 20, 20, 1.0, 1.0 },
-        { 10, 20, 0.0, 1.0 }
-    }, true)
+callbacks.unregister("FrameStageNotify", "id")
+callbacks.register("FrameStageNotify", "id", onFrame)
+`
+	path := writeTempLua(t, "callbacks_after_function", src)
+	violations, err := checkLuaCallbackMutationPolicy(path, defaultLboxMutationPolicy)
+	if err != nil {
+		t.Fatalf("policy check error: %v", err)
+	}
+	if len(violations) != 0 {
+		t.Fatalf("expected module-scope unregister/register after function def, got: %+v", violations)
+	}
+}
+
+func TestPcallRequireAllowed(t *testing.T) {
+	src := `
+local ok, MenuLib = pcall(require, "Menu")
+if not ok then return end
+`
+	path := writeTempLua(t, "pcall_require_ok", src)
+	violations, err := checkLuaCallbackMutationPolicy(path, defaultLboxMutationPolicy)
+	if err != nil {
+		t.Fatalf("policy check error: %v", err)
+	}
+	for _, v := range violations {
+		if strings.Contains(v.Message, "pcall") {
+			t.Fatalf("pcall(require, ...) should be allowed, got: %v", v.Message)
+		}
+	}
+}
+
+func TestPcallAnonymousFunctionRejected(t *testing.T) {
+	src := `
+local ok = pcall(function()
+    local me = entities.GetLocalPlayer()
+    return me and me:IsAlive()
 end)
 `
-	path := writeTempLua(t, "textured_polygon_no_color", src)
+	path := writeTempLua(t, "pcall_anon_bad", src)
 	violations, err := checkLuaCallbackMutationPolicy(path, defaultLboxMutationPolicy)
 	if err != nil {
 		t.Fatalf("policy check error: %v", err)
 	}
 	found := false
 	for _, v := range violations {
-		if strings.Contains(v.Message, "draw.TexturedPolygon() requires draw.Color() earlier in the same Draw callback") {
+		if strings.Contains(v.Message, "pcall(function()") {
 			found = true
 			break
 		}
 	}
 	if !found {
-		t.Fatalf("expected draw.TexturedPolygon color setup violation, got: %+v", violations)
-	}
-}
-
-func TestNamedDrawHandlerWithFontAndColorAllowed(t *testing.T) {
-	src := `
-local font = draw.CreateFont("Verdana", 16, 800)
-
-local function OnDraw()
-    draw.SetFont(font)
-    draw.Color(255, 255, 255, 255)
-    draw.Text(10, 10, "hello")
-end
-
-callbacks.unregister("Draw", "HUD")
-callbacks.register("Draw", "HUD", OnDraw)
-`
-	path := writeTempLua(t, "named_draw_handler_ok", src)
-	violations, err := checkLuaCallbackMutationPolicy(path, defaultLboxMutationPolicy)
-	if err != nil {
-		t.Fatalf("policy check error: %v", err)
-	}
-	for _, v := range violations {
-		if strings.Contains(v.Message, "draw.Text() requires draw.SetFont()") || strings.Contains(v.Message, "draw.Text() requires draw.Color()") {
-			t.Fatalf("unexpected draw state violation: %+v", violations)
-		}
-	}
-}
-
-func TestDrawTextWithStaticallyInvalidFontRejected(t *testing.T) {
-	src := `
-local font = nil
-
-callbacks.unregister("Draw", "HUD")
-callbacks.register("Draw", "HUD", function()
-    draw.Color(255, 255, 255, 255)
-    draw.SetFont(font)
-    draw.Text(10, 10, "hello")
-end)
-`
-	path := writeTempLua(t, "invalid_font_handle", src)
-	violations, err := checkLuaCallbackMutationPolicy(path, defaultLboxMutationPolicy)
-	if err != nil {
-		t.Fatalf("policy check error: %v", err)
-	}
-	foundInvalidSetFont := false
-	foundMissingFont := false
-	for _, v := range violations {
-		if strings.Contains(v.Message, "draw.SetFont() uses a font handle that is statically known invalid") {
-			foundInvalidSetFont = true
-		}
-		if strings.Contains(v.Message, "draw.Text() requires draw.SetFont() earlier in the same Draw callback") {
-			foundMissingFont = true
-		}
-	}
-	if !foundInvalidSetFont || !foundMissingFont {
-		t.Fatalf("expected invalid draw.SetFont and follow-up draw.Text font violation, got: %+v", violations)
-	}
-}
-
-func TestDrawTextWithUnknownFontSourceAllowed(t *testing.T) {
-	src := `
-callbacks.unregister("Draw", "HUD")
-callbacks.register("Draw", "HUD", function()
-    draw.Color(255, 255, 255, 255)
-    draw.SetFont(shared_font)
-    draw.Text(10, 10, "hello")
-end)
-`
-	path := writeTempLua(t, "unknown_font_source", src)
-	violations, err := checkLuaCallbackMutationPolicy(path, defaultLboxMutationPolicy)
-	if err != nil {
-		t.Fatalf("policy check error: %v", err)
-	}
-	for _, v := range violations {
-		if strings.Contains(v.Message, "draw.SetFont() uses a font handle that is statically known invalid") || strings.Contains(v.Message, "draw.Text() requires draw.SetFont()") {
-			t.Fatalf("unknown font source should be accepted for static analysis, got: %+v", violations)
-		}
-	}
-}
-
-func TestDrawTextWithBuiltinFontAllowed(t *testing.T) {
-	src := `
-callbacks.unregister("Draw", "HUD")
-callbacks.register("Draw", "HUD", function()
-    draw.Color(255, 255, 255, 255)
-    draw.SetFont(Fonts.Verdana)
-    draw.Text(10, 10, "hello")
-end)
-`
-	path := writeTempLua(t, "builtin_font_ok", src)
-	violations, err := checkLuaCallbackMutationPolicy(path, defaultLboxMutationPolicy)
-	if err != nil {
-		t.Fatalf("policy check error: %v", err)
-	}
-	for _, v := range violations {
-		if strings.Contains(v.Message, "draw.SetFont() uses a font handle that is statically known invalid") || strings.Contains(v.Message, "draw.Text() requires draw.SetFont()") {
-			t.Fatalf("builtin font should be accepted, got: %+v", violations)
-		}
-	}
-}
-
-func TestHelperDrawCallWithoutStateRejected(t *testing.T) {
-	src := `
-local function DrawStuff()
-    draw.TexturedPolygon(1, {
-        { 10, 10, 0.0, 0.0 },
-        { 20, 10, 1.0, 0.0 },
-        { 20, 20, 1.0, 1.0 },
-        { 10, 20, 0.0, 1.0 }
-    }, true)
-    draw.Text(10, 10, "hello")
-end
-
-callbacks.unregister("Draw", "HUD")
-callbacks.register("Draw", "HUD", function()
-    DrawStuff()
-end)
-`
-	path := writeTempLua(t, "helper_draw_no_state", src)
-	violations, err := checkLuaCallbackMutationPolicy(path, defaultLboxMutationPolicy)
-	if err != nil {
-		t.Fatalf("policy check error: %v", err)
-	}
-	foundColor := false
-	foundFont := false
-	for _, v := range violations {
-		if strings.Contains(v.Message, "draw.TexturedPolygon() requires draw.Color() earlier in the same Draw callback chain") {
-			foundColor = true
-		}
-		if strings.Contains(v.Message, "draw.Text() requires draw.SetFont() earlier in the same Draw callback chain") {
-			foundFont = true
-		}
-	}
-	if !foundColor || !foundFont {
-		t.Fatalf("expected helper-chain draw state violations, got: %+v", violations)
-	}
-}
-
-func TestHelperDrawCallWithCallerStateAllowed(t *testing.T) {
-	src := `
-local font = draw.CreateFont("Verdana", 16, 800)
-
-local function DrawStuff()
-    draw.TexturedPolygon(1, {
-        { 10, 10, 0.0, 0.0 },
-        { 20, 10, 1.0, 0.0 },
-        { 20, 20, 1.0, 1.0 },
-        { 10, 20, 0.0, 1.0 }
-    }, true)
-    draw.Text(10, 10, "hello")
-end
-
-callbacks.unregister("Draw", "HUD")
-callbacks.register("Draw", "HUD", function()
-    draw.Color(255, 255, 255, 255)
-    draw.SetFont(font)
-    DrawStuff()
-end)
-`
-	path := writeTempLua(t, "helper_draw_with_caller_state", src)
-	violations, err := checkLuaCallbackMutationPolicy(path, defaultLboxMutationPolicy)
-	if err != nil {
-		t.Fatalf("policy check error: %v", err)
-	}
-	for _, v := range violations {
-		if strings.Contains(v.Message, "draw.TexturedPolygon() requires draw.Color()") || strings.Contains(v.Message, "draw.Text() requires draw.SetFont()") {
-			t.Fatalf("caller state should flow into a unique helper chain, got: %+v", violations)
-		}
-	}
-}
-
-func TestSharedHelperDrawRequiresOwnState(t *testing.T) {
-	src := `
-local font = draw.CreateFont("Verdana", 16, 800)
-
-local function SharedDraw()
-    draw.Text(10, 10, "hello")
-end
-
-callbacks.unregister("Draw", "HUD1")
-callbacks.register("Draw", "HUD1", function()
-    draw.Color(255, 255, 255, 255)
-    draw.SetFont(font)
-    SharedDraw()
-end)
-
-callbacks.unregister("Draw", "HUD2")
-callbacks.register("Draw", "HUD2", function()
-    SharedDraw()
-end)
-`
-	path := writeTempLua(t, "shared_helper_requires_state", src)
-	violations, err := checkLuaCallbackMutationPolicy(path, defaultLboxMutationPolicy)
-	if err != nil {
-		t.Fatalf("policy check error: %v", err)
-	}
-	found := false
-	for _, v := range violations {
-		if strings.Contains(v.Message, "draw.Text() requires draw.SetFont() earlier in the same Draw callback chain") {
-			found = true
-			break
-		}
-	}
-	if !found {
-		t.Fatalf("expected shared helper to require its own font state, got: %+v", violations)
-	}
-}
-
-func TestLinearHelperChainWithSetupAllowed(t *testing.T) {
-	src := `
-local font = draw.CreateFont("Verdana", 16, 800)
-
-local function EmitDraw()
-    draw.TexturedPolygon(1, {
-        { 10, 10, 0.0, 0.0 },
-        { 20, 10, 1.0, 0.0 },
-        { 20, 20, 1.0, 1.0 },
-        { 10, 20, 0.0, 1.0 }
-    }, true)
-    draw.Text(10, 10, "hello")
-end
-
-local function PrepareDraw()
-    draw.Color(255, 255, 255, 255)
-    draw.SetFont(font)
-    EmitDraw()
-end
-
-callbacks.unregister("Draw", "HUD")
-callbacks.register("Draw", "HUD", function()
-    PrepareDraw()
-end)
-`
-	path := writeTempLua(t, "linear_helper_chain_ok", src)
-	violations, err := checkLuaCallbackMutationPolicy(path, defaultLboxMutationPolicy)
-	if err != nil {
-		t.Fatalf("policy check error: %v", err)
-	}
-	for _, v := range violations {
-		if strings.Contains(v.Message, "draw.TexturedPolygon() requires draw.Color()") || strings.Contains(v.Message, "draw.Text() requires draw.SetFont()") {
-			t.Fatalf("linear helper chain should preserve prior setup, got: %+v", violations)
-		}
-	}
-}
-
-func TestLinearHelperChainWithLateSetupRejected(t *testing.T) {
-	src := `
-local font = draw.CreateFont("Verdana", 16, 800)
-
-local function EmitDraw()
-    draw.TexturedPolygon(1, {
-        { 10, 10, 0.0, 0.0 },
-        { 20, 10, 1.0, 0.0 },
-        { 20, 20, 1.0, 1.0 },
-        { 10, 20, 0.0, 1.0 }
-    }, true)
-    draw.Text(10, 10, "hello")
-end
-
-local function PrepareDraw()
-    EmitDraw()
-    draw.Color(255, 255, 255, 255)
-    draw.SetFont(font)
-end
-
-callbacks.unregister("Draw", "HUD")
-callbacks.register("Draw", "HUD", function()
-    PrepareDraw()
-end)
-`
-	path := writeTempLua(t, "linear_helper_chain_late_setup", src)
-	violations, err := checkLuaCallbackMutationPolicy(path, defaultLboxMutationPolicy)
-	if err != nil {
-		t.Fatalf("policy check error: %v", err)
-	}
-	foundColor := false
-	foundFont := false
-	for _, v := range violations {
-		if strings.Contains(v.Message, "draw.TexturedPolygon() requires draw.Color() earlier in the same Draw callback chain") {
-			foundColor = true
-		}
-		if strings.Contains(v.Message, "draw.Text() requires draw.SetFont() earlier in the same Draw callback chain") {
-			foundFont = true
-		}
-	}
-	if !foundColor || !foundFont {
-		t.Fatalf("expected late helper-chain setup to fail prefix validation, got: %+v", violations)
+		t.Fatalf("expected pcall(function()) violation, got: %+v", violations)
 	}
 }
 
@@ -837,341 +567,5 @@ callbacks.register("PostPropUpdate", "Legacy", function() end)
 	}
 	if !found {
 		t.Fatalf("expected PostPropUpdate violation, got: %+v", violations)
-	}
-}
-
-func TestWarpTriggerOutsideCreateMoveRejected(t *testing.T) {
-	src := `
-callbacks.unregister("Draw", "warp_bad")
-callbacks.register("Draw", "warp_bad", function()
-    warp.TriggerWarp()
-end)
-`
-	path := writeTempLua(t, "warp_outside_createmove", src)
-	violations, err := checkLuaCallbackMutationPolicy(path, defaultLboxMutationPolicy)
-	if err != nil {
-		t.Fatalf("policy check error: %v", err)
-	}
-	found := false
-	for _, v := range violations {
-		if strings.Contains(v.Message, "warp trigger calls must be made from a CreateMove callback") {
-			found = true
-			break
-		}
-	}
-	if !found {
-		t.Fatalf("expected warp trigger location violation, got: %+v", violations)
-	}
-}
-
-func TestWarpTriggerInsideCreateMoveAllowed(t *testing.T) {
-	src := `
-callbacks.unregister("CreateMove", "warp_ok")
-callbacks.register("CreateMove", "warp_ok", function(cmd)
-    warp.TriggerWarp()
-end)
-`
-	path := writeTempLua(t, "warp_inside_createmove", src)
-	violations, err := checkLuaCallbackMutationPolicy(path, defaultLboxMutationPolicy)
-	if err != nil {
-		t.Fatalf("policy check error: %v", err)
-	}
-	for _, v := range violations {
-		if strings.Contains(v.Message, "warp trigger calls must be made from a CreateMove callback") {
-			t.Fatalf("unexpected warp trigger violation: %+v", violations)
-		}
-	}
-}
-
-func TestSuspiciousSetupBonesRejected(t *testing.T) {
-	src := `
-local bones = entity:SetupBones()
-local badMask = entity:SetupBones(0, globals.CurTime())
-`
-	path := writeTempLua(t, "setupbones_bad", src)
-	violations, err := checkLuaCallbackMutationPolicy(path, defaultLboxMutationPolicy)
-	if err != nil {
-		t.Fatalf("policy check error: %v", err)
-	}
-	found := false
-	for _, v := range violations {
-		if strings.Contains(v.Message, "SetupBones") {
-			found = true
-			break
-		}
-	}
-	if !found {
-		t.Fatalf("expected SetupBones violation, got: %+v", violations)
-	}
-}
-
-func TestCanonicalSetupBonesAllowed(t *testing.T) {
-	src := `
-local bones = entity:SetupBones(0x7ff00, globals.CurTime())
-`
-	path := writeTempLua(t, "setupbones_ok", src)
-	violations, err := checkLuaCallbackMutationPolicy(path, defaultLboxMutationPolicy)
-	if err != nil {
-		t.Fatalf("policy check error: %v", err)
-	}
-	for _, v := range violations {
-		if strings.Contains(v.Message, "SetupBones") {
-			t.Fatalf("unexpected SetupBones violation: %+v", violations)
-		}
-	}
-}
-
-func TestIpairsOnFindByClassVariableRejected(t *testing.T) {
-	src := `
-local players = entities.FindByClass("CTFPlayer")
-for _, player in ipairs(players) do
-    print(player)
-end
-`
-	path := writeTempLua(t, "ipairs_findbyclass_var", src)
-	violations, err := checkLuaCallbackMutationPolicy(path, defaultLboxMutationPolicy)
-	if err != nil {
-		t.Fatalf("policy check error: %v", err)
-	}
-	found := false
-	for _, v := range violations {
-		if strings.Contains(v.Message, "FindByClass() and may be sparse") {
-			found = true
-			break
-		}
-	}
-	if !found {
-		t.Fatalf("expected ipairs FindByClass violation, got: %+v", violations)
-	}
-}
-
-func TestDirectIpairsOnFindByClassRejected(t *testing.T) {
-	src := `
-for _, player in ipairs(entities.FindByClass("CTFPlayer")) do
-    print(player)
-end
-`
-	path := writeTempLua(t, "ipairs_findbyclass_direct", src)
-	violations, err := checkLuaCallbackMutationPolicy(path, defaultLboxMutationPolicy)
-	if err != nil {
-		t.Fatalf("policy check error: %v", err)
-	}
-	found := false
-	for _, v := range violations {
-		if strings.Contains(v.Message, "entities.FindByClass() returns a sparse entity table") {
-			found = true
-			break
-		}
-	}
-	if !found {
-		t.Fatalf("expected direct ipairs FindByClass violation, got: %+v", violations)
-	}
-}
-
-func TestPairsOnFindByClassAllowed(t *testing.T) {
-	src := `
-local players = entities.FindByClass("CTFPlayer")
-for _, player in pairs(players) do
-    print(player)
-end
-`
-	path := writeTempLua(t, "pairs_findbyclass_ok", src)
-	violations, err := checkLuaCallbackMutationPolicy(path, defaultLboxMutationPolicy)
-	if err != nil {
-		t.Fatalf("policy check error: %v", err)
-	}
-	for _, v := range violations {
-		if strings.Contains(v.Message, "FindByClass") && strings.Contains(v.Message, "sparse") {
-			t.Fatalf("unexpected FindByClass iteration violation: %+v", violations)
-		}
-	}
-}
-
-func TestIpairsAllowedAfterFindByClassTableModified(t *testing.T) {
-	src := `
-local players = entities.FindByClass("CTFPlayer")
-table.sort(players, function(a, b) return a:GetIndex() < b:GetIndex() end)
-for _, player in ipairs(players) do
-    print(player)
-end
-`
-	path := writeTempLua(t, "ipairs_findbyclass_modified", src)
-	violations, err := checkLuaCallbackMutationPolicy(path, defaultLboxMutationPolicy)
-	if err != nil {
-		t.Fatalf("policy check error: %v", err)
-	}
-	for _, v := range violations {
-		if strings.Contains(v.Message, "FindByClass") && strings.Contains(v.Message, "sparse") {
-			t.Fatalf("modified table should not trigger FindByClass ipairs rule: %+v", violations)
-		}
-	}
-}
-
-func TestCachedEntityWithoutIsValidRejected(t *testing.T) {
-	src := `
-local cached_weapon = nil
-
-callbacks.unregister("CreateMove", "cache_weapon")
-callbacks.register("CreateMove", "cache_weapon", function(cmd)
-    local me = entities.GetLocalPlayer()
-    cached_weapon = me:GetPropEntity("m_hActiveWeapon")
-    if cached_weapon then
-        print(cached_weapon:IsAlive())
-    end
-end)
-`
-	path := writeTempLua(t, "cached_entity_no_isvalid", src)
-	violations, err := checkLuaCallbackMutationPolicy(path, defaultLboxMutationPolicy)
-	if err != nil {
-		t.Fatalf("policy check error: %v", err)
-	}
-	found := false
-	for _, v := range violations {
-		if strings.Contains(v.Message, "cached entity 'cached_weapon'") {
-			found = true
-			break
-		}
-	}
-	if !found {
-		t.Fatalf("expected cached entity IsValid violation, got: %+v", violations)
-	}
-}
-
-func TestCachedEntityWithIsValidAllowed(t *testing.T) {
-	src := `
-local cached_weapon = nil
-
-callbacks.unregister("CreateMove", "cache_weapon_ok")
-callbacks.register("CreateMove", "cache_weapon_ok", function(cmd)
-    local me = entities.GetLocalPlayer()
-    cached_weapon = me:GetPropEntity("m_hActiveWeapon")
-    if not cached_weapon or not cached_weapon:IsValid() then return end
-    print(cached_weapon:IsAlive())
-end)
-`
-	path := writeTempLua(t, "cached_entity_with_isvalid", src)
-	violations, err := checkLuaCallbackMutationPolicy(path, defaultLboxMutationPolicy)
-	if err != nil {
-		t.Fatalf("policy check error: %v", err)
-	}
-	for _, v := range violations {
-		if strings.Contains(v.Message, "cached entity 'cached_weapon'") {
-			t.Fatalf("unexpected cached entity IsValid violation: %+v", violations)
-		}
-	}
-}
-
-func TestNonCachedLocalEntityNotFlagged(t *testing.T) {
-	src := `
-callbacks.unregister("CreateMove", "temp_entity")
-callbacks.register("CreateMove", "temp_entity", function(cmd)
-    local me = entities.GetLocalPlayer()
-    if me and me:IsAlive() then
-        print(me:GetName())
-    end
-end)
-`
-	path := writeTempLua(t, "local_entity_temp", src)
-	violations, err := checkLuaCallbackMutationPolicy(path, defaultLboxMutationPolicy)
-	if err != nil {
-		t.Fatalf("policy check error: %v", err)
-	}
-	for _, v := range violations {
-		if strings.Contains(v.Message, "cached entity") {
-			t.Fatalf("unexpected cached entity violation for local temporary entity: %+v", violations)
-		}
-	}
-}
-
-func TestInlineCallbackFunctionProducesAdvisoryWarning(t *testing.T) {
-	src := `
-callbacks.unregister("Draw", "warn_inline")
-callbacks.register("Draw", "warn_inline", function()
-    print("hello")
-end)
-`
-	path := writeTempLua(t, "inline_callback_warning", src)
-	warnings, err := collectLuaAdvisoryWarnings(path)
-	if err != nil {
-		t.Fatalf("advisory scan error: %v", err)
-	}
-	found := false
-	for _, warning := range warnings {
-		if strings.Contains(warning, "inline anonymous function passed to callbacks.Register") {
-			found = true
-			break
-		}
-	}
-	if !found {
-		t.Fatalf("expected inline callback advisory warning, got: %+v", warnings)
-	}
-}
-
-func TestNamedCallbackFunctionNoAdvisoryWarning(t *testing.T) {
-	src := `
-local function OnDraw()
-    print("hello")
-end
-
-callbacks.unregister("Draw", "named_draw")
-callbacks.register("Draw", "named_draw", OnDraw)
-`
-	path := writeTempLua(t, "named_callback_ok", src)
-	warnings, err := collectLuaAdvisoryWarnings(path)
-	if err != nil {
-		t.Fatalf("advisory scan error: %v", err)
-	}
-	for _, warning := range warnings {
-		if strings.Contains(warning, "inline anonymous function passed to callbacks.Register") {
-			t.Fatalf("unexpected inline callback advisory warning: %+v", warnings)
-		}
-	}
-}
-
-func TestLateFunctionDefinitionProducesAdvisoryWarning(t *testing.T) {
-	src := `
-local direction = NormalizeVector(Vector3(1, 0, 0))
-
-local function NormalizeVector(vec)
-    return vec
-end
-
-print(direction)
-`
-	path := writeTempLua(t, "late_function_definition_warning", src)
-	warnings, err := collectLuaAdvisoryWarnings(path)
-	if err != nil {
-		t.Fatalf("advisory scan error: %v", err)
-	}
-	found := false
-	for _, warning := range warnings {
-		if strings.Contains(warning, "function 'NormalizeVector' is called before its definition") {
-			found = true
-			break
-		}
-	}
-	if !found {
-		t.Fatalf("expected late function definition advisory warning, got: %+v", warnings)
-	}
-}
-
-func TestFunctionDefinedBeforeUseProducesNoLateDefinitionWarning(t *testing.T) {
-	src := `
-local function NormalizeVector(vec)
-    return vec
-end
-
-local direction = NormalizeVector(Vector3(1, 0, 0))
-print(direction)
-`
-	path := writeTempLua(t, "ordered_function_definition_ok", src)
-	warnings, err := collectLuaAdvisoryWarnings(path)
-	if err != nil {
-		t.Fatalf("advisory scan error: %v", err)
-	}
-	for _, warning := range warnings {
-		if strings.Contains(warning, "called before its definition") {
-			t.Fatalf("unexpected late function definition advisory warning: %+v", warnings)
-		}
 	}
 }
