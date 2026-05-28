@@ -1,17 +1,20 @@
 name: Build Runtime Release
 
+# Full GitHub release (all platform zips + VSIX + checksums) runs ONLY on version tags.
+# Pushing package.json to main without a tag does not publish anymore (avoids race with tag push).
 on:
   push:
     tags:
       - "v*"
-    branches:
-      - "main"
-    paths:
-      - "vscode-extension/package.json"
-      - "vscode-extension/package-lock.json"
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Release tag to build and publish (e.g. v1.2.5). Defaults to latest package.json version."
+        required: false
+        type: string
 
 concurrency:
-  group: release-${{ github.ref }}
+  group: release-publish
   cancel-in-progress: false
 
 env:
@@ -123,7 +126,9 @@ jobs:
         run: |
           set -euo pipefail
           PACKAGE_VERSION=$(node -p "require('./vscode-extension/package.json').version")
-          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ -n "${{ inputs.release_tag }}" ]; then
+            RELEASE_TAG="${{ inputs.release_tag }}"
+          elif [ "${GITHUB_REF_TYPE}" = "tag" ]; then
             RELEASE_TAG="${GITHUB_REF_NAME}"
           else
             RELEASE_TAG="v${PACKAGE_VERSION}"
@@ -133,7 +138,6 @@ jobs:
           echo "release_tag=${RELEASE_TAG}" >> "$GITHUB_OUTPUT"
 
       - name: Verify extension version matches tag
-        if: ${{ github.ref_type == 'tag' }}
         shell: bash
         env:
           RELEASE_TAG: ${{ steps.release_meta.outputs.release_tag }}
@@ -143,6 +147,7 @@ jobs:
           EXPECTED_TAG="v${PACKAGE_VERSION}"
           if [ "${RELEASE_TAG}" != "${EXPECTED_TAG}" ]; then
             echo "Release tag ${RELEASE_TAG} does not match vscode-extension version ${PACKAGE_VERSION}."
+            echo "Tag the commit after bumping package.json, or pass release_tag=v${PACKAGE_VERSION}."
             exit 1
           fi
 
@@ -178,22 +183,42 @@ jobs:
           path: dist
           merge-multiple: true
 
+      - name: Verify release artifacts before upload
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "dist contents:"
+          ls -la dist/
+          ZIP_COUNT=$(find dist -maxdepth 1 -name 'lmaobox-context-runtime_*.zip' | wc -l)
+          if [ "$ZIP_COUNT" -lt 5 ]; then
+            echo "Expected 5 runtime zip artifacts, found ${ZIP_COUNT}"
+            exit 1
+          fi
+          if ! ls dist/lmaobox-context-*.vsix 1>/dev/null 2>&1; then
+            echo "Missing VSIX in dist/"
+            exit 1
+          fi
+
       - name: Generate SHA256 checksums
         shell: bash
         run: |
           set -euo pipefail
           cd dist
-          sha256sum *.zip > checksums.txt
+          sha256sum lmaobox-context-runtime_*.zip lmaobox-context-*.vsix > checksums.txt
+          cat checksums.txt
 
       - name: Create GitHub release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.release_meta.outputs.release_tag }}
           name: ${{ steps.release_meta.outputs.release_tag }}
+          make_latest: true
+          overwrite_files: true
+          generate_release_notes: true
           files: |
-            dist/*.zip
+            dist/lmaobox-context-runtime_*.zip
+            dist/lmaobox-context-*.vsix
             dist/checksums.txt
-            dist/*.vsix
 
       - name: Publish to VS Code Marketplace
         if: ${{ env.VSCE_PAT != '' }}
