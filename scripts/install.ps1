@@ -56,7 +56,7 @@ if (-not $SkipNodeInstall) {
     Write-Host "[3/4] Installing Node dependencies in automations/..."
     $npmCmd = Get-Command npm -ErrorAction SilentlyContinue
     if (-not $npmCmd) {
-        Write-Host "  npm not found — skipping Node dependencies (bundler may not work)"
+        Write-Host "  npm not found - skipping Node dependencies (bundler may not work)"
     }
     else {
         Push-Location (Join-Path $repoRoot "automations")
@@ -149,7 +149,7 @@ if ($RunWebRefresh) {
         Pop-Location
     }
     else {
-        Write-Host "[opt] node not found — skipping web refresh"
+        Write-Host "[opt] node not found - skipping web refresh"
     }
 }
 
@@ -162,4 +162,4 @@ Write-Host "MCP server entry point: $runScript"
 Write-Host "Restart VS Code or reload the MCP config to pick up the changes."
 Write-Host ""
 Write-Host "On each startup, run-mcp.ps1 will auto-rebuild if .go sources changed."
-Write-Host "No binary is stored in git — source is always the truth."
+Write-Host "No binary is stored in git - source is always the truth."
