@@ -81,6 +81,12 @@ if (-not $SkipMcpConfig) {
 
     if (Test-Path $mcpJson) {
         $raw = Get-Content $mcpJson -Raw | ConvertFrom-Json
+        if (-not $raw) {
+            $raw = [PSCustomObject]@{ inputs = @(); servers = [PSCustomObject]@{} }
+        }
+        if (-not $raw.servers) {
+            Add-Member -InputObject $raw -MemberType NoteProperty -Name "servers" -Value ([PSCustomObject]@{}) -Force
+        }
     }
     else {
         $raw = [PSCustomObject]@{ inputs = @(); servers = [PSCustomObject]@{} }
